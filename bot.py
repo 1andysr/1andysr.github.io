@@ -13,7 +13,7 @@ from telegram.ext import (
 
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
-MODERATION_GROUP_ID = int(os.getenv("MODERATION_GROUP_ID"))
+MODERATION_GROUP_ID = os.getenv("MODERATION_GROUP_ID")
 PUBLIC_CHANNEL = os.getenv("PUBLIC_CHANNEL")
 
 print(f"MODERATION_GROUP_ID: {MODERATION_GROUP_ID}")

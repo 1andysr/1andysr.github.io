@@ -14,7 +14,7 @@ from telegram.ext import (
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
 MODERATION_GROUP_ID = int(os.getenv("MODERATION_GROUP_ID"))
-PUBLIC_GROUP_ID = int(os.getenv("PUBLIC_GROUP_ID"))
+PUBLIC_GROUP_ID = os.getenv("PUBLIC_GROUP_ID")
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',

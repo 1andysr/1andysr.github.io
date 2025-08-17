@@ -78,7 +78,7 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if action == "approve":
         await context.bot.send_message(
-            chat_id=PUBLIC_GROUP_ID,
+            chat_id=PUBLIC_CHANNEL,
             text=f"📢 Confesión anónima:\n\n{confession_data['text']}"
         )
         

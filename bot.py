@@ -16,6 +16,9 @@ TOKEN = os.getenv("BOT_TOKEN")
 MODERATION_GROUP_ID = int(os.getenv("MODERATION_GROUP_ID"))
 PUBLIC_CHANNEL = os.getenv("PUBLIC_CHANNEL")
 
+print(f"MODERATION_GROUP_ID: {MODERATION_GROUP_ID}")
+print(f"PUBLIC_CHANNEL: {PUBLIC_CHANNEL}")
+
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -105,7 +108,7 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     del pending_confessions[confession_id]
 
 def main():
-    """Configura y ejecuta el bot"""
+
     app = ApplicationBuilder().token(TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))

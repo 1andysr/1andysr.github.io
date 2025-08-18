@@ -1,6 +1,8 @@
 import os
 import logging
-from dotenv import load_dotenv
+from threading import Thread
+from fastapi import FastAPI
+import uvicorn
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -10,14 +12,12 @@ from telegram.ext import (
     ContextTypes,
     filters
 )
+from dotenv import load_dotenv
 
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
 MODERATION_GROUP_ID = os.getenv("MODERATION_GROUP_ID")
 PUBLIC_CHANNEL = os.getenv("PUBLIC_CHANNEL")
-
-print(f"MODERATION_GROUP_ID: {MODERATION_GROUP_ID}")
-print(f"PUBLIC_CHANNEL: {PUBLIC_CHANNEL}")
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -27,14 +27,14 @@ logging.basicConfig(
 pending_confessions = {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Maneja el comando /start"""
     await update.message.reply_text(
-        "Hola 👋\n\nEnvíame tu confesión y la publicaré anónimamente "
-        "después de que sea revisada por nuestros moderadores."
+        "Hola 👋\n\nEnvíame tu confesión en texto y la publicaré anónimamente."
     )
 
+async def handle_non_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("⚠️ Solo acepto confesiones en texto.")
+
 async def handle_confession(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Procesa las confesiones enviadas por usuarios"""
     if update.message.chat.type != "private":
         return
     
@@ -60,13 +60,9 @@ async def handle_confession(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     
-    await update.message.reply_text(
-        "✋ Tu confesión ha sido enviada a moderación. "
-        "Recibirás una notificación cuando sea procesada."
-    )
+    await update.message.reply_text("✋ Tu confesión ha sido enviada a moderación.")
 
 async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Maneja las acciones de moderación"""
     query = update.callback_query
     await query.answer()
     
@@ -107,15 +103,25 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     del pending_confessions[confession_id]
 
-def main():
-
+def run_bot():
     app = ApplicationBuilder().token(TOKEN).build()
-    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_confession))
+    app.add_handler(MessageHandler(~filters.TEXT & ~filters.COMMAND, handle_non_text))
     app.add_handler(CallbackQueryHandler(handle_moderation))
-    
     app.run_polling()
 
+def run_web():
+    web_app = FastAPI()
+    
+    @web_app.get("/")
+    def home():
+        return {"status": "Bot running"}
+    
+    uvicorn.run(web_app, host="0.0.0.0", port=10000)
+
 if __name__ == "__main__":
-    main()
+    bot_thread = Thread(target=run_bot)
+    bot_thread.daemon = True
+    bot_thread.start()
+    run_web()

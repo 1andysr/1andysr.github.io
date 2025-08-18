@@ -13,6 +13,7 @@ from telegram.ext import (
 from dotenv import load_dotenv
 import uvicorn
 import asyncio
+import urllib.request
 
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
@@ -105,15 +106,28 @@ async def run_bot():
 
 def run_fastapi():
     app = FastAPI()
+
     @app.get("/")
     def read_root():
         return {"status": "Bot is running"}
+    
     uvicorn.run(app, host="0.0.0.0", port=10000)
+
+async def self_ping():
+    url = os.getenv("RENDER_EXTERNAL_URL") or "https://oneandysr-github-io.onrender.com"
+    while True:
+        try:
+            urllib.request.urlopen(url, timeout=10)
+            logging.info("Ping sent to keep server alive")
+        except Exception as e:
+            logging.warning(f"Ping failed: {e}")
+        await asyncio.sleep(300)  # cada 5 minutos
 
 async def main():
     await asyncio.gather(
         run_bot(),
-        asyncio.to_thread(run_fastapi)
+        asyncio.to_thread(run_fastapi),
+        self_ping()
     )
 
 if __name__ == "__main__":

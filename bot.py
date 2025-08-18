@@ -1,8 +1,6 @@
 import os
 import logging
-import asyncio
 from fastapi import FastAPI
-import uvicorn
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -13,6 +11,8 @@ from telegram.ext import (
     filters
 )
 from dotenv import load_dotenv
+import uvicorn
+import asyncio
 
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
@@ -27,9 +27,7 @@ logging.basicConfig(
 pending_confessions = {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Hola 👋\n\nEnvíame tu confesión en texto y la publicaré anónimamente."
-    )
+    await update.message.reply_text("Hola 👋\n\nEnvíame tu confesión en texto y la publicaré anónimamente.")
 
 async def handle_non_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⚠️ Solo acepto confesiones en texto.")
@@ -42,32 +40,24 @@ async def handle_confession(update: Update, context: ContextTypes.DEFAULT_TYPE):
     confession = update.message.text
     
     confession_id = abs(hash(f"{user_id}{confession}")) % (10**8)
-    pending_confessions[confession_id] = {
-        "text": confession,
-        "user_id": user_id
-    }
+    pending_confessions[confession_id] = {"text": confession, "user_id": user_id}
     
-    keyboard = [
-        [
-            InlineKeyboardButton("✅ Aprobar", callback_data=f"approve_{confession_id}"),
-            InlineKeyboardButton("❌ Rechazar", callback_data=f"reject_{confession_id}")
-        ]
-    ]
+    keyboard = [[
+        InlineKeyboardButton("✅ Aprobar", callback_data=f"approve_{confession_id}"),
+        InlineKeyboardButton("❌ Rechazar", callback_data=f"reject_{confession_id}")
+    ]]
     
     await context.bot.send_message(
         chat_id=MODERATION_GROUP_ID,
         text=f"📝 Nueva confesión (ID: {confession_id}):\n\n{confession}",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
-    
     await update.message.reply_text("✋ Tu confesión ha sido enviada a moderación.")
 
 async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
-    action, confession_id = query.data.split("_")
-    confession_id = int(confession_id)
+    confession_id = int(query.data.split("_")[1])
     
     if confession_id not in pending_confessions:
         await query.edit_message_text("⚠️ Esta confesión ya fue procesada.")
@@ -75,12 +65,11 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     confession_data = pending_confessions[confession_id]
     
-    if action == "approve":
+    if "approve" in query.data:
         await context.bot.send_message(
             chat_id=PUBLIC_CHANNEL,
             text=f"📢 Confesión anónima:\n\n{confession_data['text']}"
         )
-        
         try:
             await context.bot.send_message(
                 chat_id=confession_data["user_id"],
@@ -88,7 +77,6 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception:
             pass
-        
         await query.edit_message_text(f"✅ Confesión {confession_id} aprobada")
     else:
         try:
@@ -98,7 +86,6 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception:
             pass
-        
         await query.edit_message_text(f"❌ Confesión {confession_id} rechazada")
     
     del pending_confessions[confession_id]
@@ -109,21 +96,25 @@ async def run_bot():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_confession))
     app.add_handler(MessageHandler(~filters.TEXT & ~filters.COMMAND, handle_non_text))
     app.add_handler(CallbackQueryHandler(handle_moderation))
-    await app.run_polling()
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+    
+    while True:
+        await asyncio.sleep(3600)
 
-def run_web():
-    web_app = FastAPI()
-    
-    @web_app.get("/")
-    def home():
-        return {"status": "Bot running"}
-    
-    uvicorn.run(web_app, host="0.0.0.0", port=10000)
+def run_fastapi():
+    app = FastAPI()
+    @app.get("/")
+    def read_root():
+        return {"status": "Bot is running"}
+    uvicorn.run(app, host="0.0.0.0", port=10000)
 
 async def main():
-    bot_task = asyncio.create_task(run_bot())
-    await asyncio.to_thread(run_web)
-    await bot_task
+    await asyncio.gather(
+        run_bot(),
+        asyncio.to_thread(run_fastapi)
+    )
 
 if __name__ == "__main__":
     asyncio.run(main())

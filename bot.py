@@ -1,6 +1,6 @@
 import os
 import logging
-from threading import Thread
+import asyncio
 from fastapi import FastAPI
 import uvicorn
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -103,13 +103,13 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     del pending_confessions[confession_id]
 
-def run_bot():
+async def run_bot():
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_confession))
     app.add_handler(MessageHandler(~filters.TEXT & ~filters.COMMAND, handle_non_text))
     app.add_handler(CallbackQueryHandler(handle_moderation))
-    app.run_polling()
+    await app.run_polling()
 
 def run_web():
     web_app = FastAPI()
@@ -120,8 +120,10 @@ def run_web():
     
     uvicorn.run(web_app, host="0.0.0.0", port=10000)
 
+async def main():
+    bot_task = asyncio.create_task(run_bot())
+    await asyncio.to_thread(run_web)
+    await bot_task
+
 if __name__ == "__main__":
-    bot_thread = Thread(target=run_bot)
-    bot_thread.daemon = True
-    bot_thread.start()
-    run_web()
+    asyncio.run(main())

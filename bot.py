@@ -1,6 +1,10 @@
 import os
 import logging
+import threading
+import time
+import requests
 from fastapi import FastAPI
+import uvicorn
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -11,26 +15,28 @@ from telegram.ext import (
     filters
 )
 from dotenv import load_dotenv
-import uvicorn
-import asyncio
 
+# Configuración inicial
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
 MODERATION_GROUP_ID = os.getenv("MODERATION_GROUP_ID")
 PUBLIC_CHANNEL = os.getenv("PUBLIC_CHANNEL")
+RENDER_APP_URL = os.getenv("RENDER_APP_URL")  # Ej: https://tudominio.onrender.com
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 
+app = FastAPI()
 pending_confessions = {}
 
+# Handlers del bot
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Hola 👋\n\nEnvíame tu confesión en texto y la publicaré anónimamente.")
+    await update.message.reply_text("Hola 👋 Envíame tu confesión en texto.")
 
 async def handle_non_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⚠️ Solo acepto confesiones en texto.")
+    await update.message.reply_text("⚠️ Solo acepto texto.")
 
 async def handle_confession(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat.type != "private":
@@ -90,31 +96,30 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     del pending_confessions[confession_id]
 
-async def run_bot():
-    app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_confession))
-    app.add_handler(MessageHandler(~filters.TEXT & ~filters.COMMAND, handle_non_text))
-    app.add_handler(CallbackQueryHandler(handle_moderation))
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
-    
+# Keep-Alive para Render
+def keep_alive():
     while True:
-        await asyncio.sleep(3600)
+        try:
+            requests.get(RENDER_APP_URL)
+            logging.info("Keep-Alive: Ping enviado a Render")
+        except Exception as e:
+            logging.error(f"Keep-Alive error: {e}")
+        time.sleep(300)  # Ping cada 5 minutos
 
-def run_fastapi():
-    app = FastAPI()
-    @app.get("/")
-    def read_root():
-        return {"status": "Bot is running"}
-    uvicorn.run(app, host="0.0.0.0", port=10000)
+# Inicialización
+def run_bot():
+    bot_app = ApplicationBuilder().token(TOKEN).build()
+    bot_app.add_handler(CommandHandler("start", start))
+    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_confession))
+    bot_app.add_handler(MessageHandler(~filters.TEXT & ~filters.COMMAND, handle_non_text))
+    bot_app.add_handler(CallbackQueryHandler(handle_moderation))
+    bot_app.run_polling()
 
-async def main():
-    await asyncio.gather(
-        run_bot(),
-        asyncio.to_thread(run_fastapi)
-    )
+@app.get("/")
+def home():
+    return {"status": "Bot activo"}
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    threading.Thread(target=keep_alive, daemon=True).start()
+    threading.Thread(target=run_bot, daemon=True).start()
+    uvicorn.run(app, host="0.0.0.0", port=10000)

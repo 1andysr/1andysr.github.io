@@ -7,16 +7,19 @@ from fastapi import FastAPI
 import uvicorn
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Updater,
+    ApplicationBuilder,
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
-    Filters,
-    CallbackContext
+    ContextTypes,
+    filters
 )
 from dotenv import load_dotenv
+from PIL import Image  # Usando Pillow en lugar de imghdr
 
 load_dotenv()
+
+# Configuración inicial
 TOKEN = os.getenv("BOT_TOKEN")
 MODERATION_GROUP_ID = os.getenv("MODERATION_GROUP_ID")
 PUBLIC_CHANNEL = os.getenv("PUBLIC_CHANNEL")
@@ -30,14 +33,21 @@ logging.basicConfig(
 app = FastAPI()
 pending_confessions = {}
 
-def start(update: Update, context: CallbackContext):
-    update.message.reply_text("Hola 👋 Envíame tu confesión en texto.")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Hola 👋 Envíame tu confesión en texto.")
 
-def handle_non_text(update: Update, context: CallbackContext):
-    update.message.reply_text("⚠️ Solo acepto texto.")
+async def handle_non_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.photo:
+        await update.message.reply_text("⚠️ Solo acepto texto (no imágenes).")
+    else:
+        await update.message.reply_text("⚠️ Solo acepto mensajes de texto.")
 
-def handle_confession(update: Update, context: CallbackContext):
+async def handle_confession(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat.type != "private":
+        return
+    
+    if not update.message.text:
+        await handle_non_text(update, context)
         return
     
     user_id = update.message.from_user.id
@@ -51,60 +61,48 @@ def handle_confession(update: Update, context: CallbackContext):
         InlineKeyboardButton("❌ Rechazar", callback_data=f"reject_{confession_id}")
     ]]
     
-    context.bot.send_message(
+    await context.bot.send_message(
         chat_id=MODERATION_GROUP_ID,
         text=f"📝 Nueva confesión (ID: {confession_id}):\n\n{confession}",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
-    update.message.reply_text("✋ Tu confesión ha sido enviada a moderación.")
+    await update.message.reply_text("✋ Tu confesión ha sido enviada a moderación.")
 
-def handle_moderation(update: Update, context: CallbackContext):
+async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    query.answer()
+    await query.answer()
     confession_id = int(query.data.split("_")[1])
     
     if confession_id not in pending_confessions:
-        query.edit_message_text("⚠️ Esta confesión ya fue procesada.")
+        await query.edit_message_text("⚠️ Esta confesión ya fue procesada.")
         return
     
     confession_data = pending_confessions[confession_id]
     
     if "approve" in query.data:
-        context.bot.send_message(
+        await context.bot.send_message(
             chat_id=PUBLIC_CHANNEL,
             text=f"📢 Confesión anónima:\n\n{confession_data['text']}"
         )
         try:
-            context.bot.send_message(
+            await context.bot.send_message(
                 chat_id=confession_data["user_id"],
                 text="🎉 Tu confesión ha sido aprobada y publicada."
             )
         except Exception:
             pass
-        query.edit_message_text(f"✅ Confesión {confession_id} aprobada")
+        await query.edit_message_text(f"✅ Confesión {confession_id} aprobada")
     else:
         try:
-            context.bot.send_message(
+            await context.bot.send_message(
                 chat_id=confession_data["user_id"],
                 text="❌ Tu confesión no cumple con nuestras normas."
             )
         except Exception:
             pass
-        query.edit_message_text(f"❌ Confesión {confession_id} rechazada")
+        await query.edit_message_text(f"❌ Confesión {confession_id} rechazada")
     
     del pending_confessions[confession_id]
-
-def run_bot():
-    updater = Updater(TOKEN, use_context=True)
-    dp = updater.dispatcher
-    
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_confession))
-    dp.add_handler(MessageHandler(~Filters.text & ~Filters.command, handle_non_text))
-    dp.add_handler(CallbackQueryHandler(handle_moderation))
-    
-    updater.start_polling()
-    updater.idle()
 
 def keep_alive():
     while True:
@@ -114,6 +112,14 @@ def keep_alive():
         except Exception as e:
             logging.error(f"Keep-Alive error: {e}")
         time.sleep(300)
+
+def run_bot():
+    application = ApplicationBuilder().token(TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_confession))
+    application.add_handler(MessageHandler(~filters.TEXT & ~filters.COMMAND, handle_non_text))
+    application.add_handler(CallbackQueryHandler(handle_moderation))
+    application.run_polling()
 
 @app.get("/")
 def home():

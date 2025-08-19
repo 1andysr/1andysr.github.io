@@ -1,7 +1,8 @@
 import os
 import logging
+import time
 from fastapi import FastAPI
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Poll
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -26,18 +27,36 @@ logging.basicConfig(
 )
 
 pending_confessions = {}
+pending_polls = {}
+user_last_confession = {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Hola 👋\n\nEnvíame tu confesión en texto y la publicaré anónimamente.")
+    await update.message.reply_text("Hola 👋\n\nEnvíame tu confesión en texto o una encuesta nativa de Telegram y la publicaré anónimamente después de moderación.\n\nNo se permitiran:\nPolitica\nOfensas sin sentido\nMencion repretida de una misma persona\nDatos privados ajenos sin concentimiento")
 
 async def handle_non_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⚠️ Solo acepto confesiones en texto.")
+    if not update.message.poll:
+        await update.message.reply_text("⚠️ Solo acepto confesiones en texto o encuestas nativas de Telegram.")
 
 async def handle_confession(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat.type != "private":
         return
-    
+
+    if update.message.poll:
+        await handle_poll(update, context)
+        return
+
     user_id = update.message.from_user.id
+    current_time = time.time()
+    
+    if user_id in user_last_confession:
+        time_since_last = current_time - user_last_confession[user_id]
+        if time_since_last < 60:
+            remaining_time = int(60 - time_since_last)
+            await update.message.reply_text(f"⏰ Por favor espera {remaining_time} segundos antes de enviar otra confesión.")
+            return
+
+    user_last_confession[user_id] = current_time
+    
     confession = update.message.text
     
     confession_id = abs(hash(f"{user_id}{confession}")) % (10**8)
@@ -55,47 +74,134 @@ async def handle_confession(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text("✋ Tu confesión ha sido enviada a moderación.")
 
+async def handle_poll(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.chat.type != "private":
+        return
+    
+    user_id = update.message.from_user.id
+    current_time = time.time()
+
+    if user_id in user_last_confession:
+        time_since_last = current_time - user_last_confession[user_id]
+        if time_since_last < 60:
+            remaining_time = int(60 - time_since_last)
+            await update.message.reply_text(f"⏰ Por favor espera {remaining_time} segundos antes de enviar otra encuesta.")
+            return
+
+    user_last_confession[user_id] = current_time
+    
+    poll = update.message.poll
+
+    poll_id = abs(hash(f"{user_id}{poll.question}{poll.options[0].text}")) % (10**8)
+
+    pending_polls[poll_id] = {
+        "question": poll.question,
+        "options": [option.text for option in poll.options],
+        "is_anonymous": poll.is_anonymous,
+        "type": poll.type,
+        "allows_multiple_answers": poll.allows_multiple_answers,
+        "user_id": user_id
+    }
+    
+    options_text = "\n".join([f"• {option}" for option in pending_polls[poll_id]["options"]])
+    poll_info = f"📊 Nueva encuesta (ID: {poll_id}):\n\nPregunta: {poll.question}\n\nOpciones:\n{options_text}\n\nTipo: {poll.type}\nAnónima: {'Sí' if poll.is_anonymous else 'No'}\nMúltiples respuestas: {'Sí' if poll.allows_multiple_answers else 'No'}"
+    
+    keyboard = [[
+        InlineKeyboardButton("✅ Aprobar Encuesta", callback_data=f"approve_poll_{poll_id}"),
+        InlineKeyboardButton("❌ Rechazar Encuesta", callback_data=f"reject_poll_{poll_id}")
+    ]]
+    
+    await context.bot.send_message(
+        chat_id=MODERATION_GROUP_ID,
+        text=poll_info,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    
+    await update.message.reply_text("✋ Tu encuesta ha sido enviada a moderación.")
+
 async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    confession_id = int(query.data.split("_")[1])
     
-    if confession_id not in pending_confessions:
-        await query.edit_message_text("⚠️ Esta confesión ya fue procesada.")
-        return
-    
-    confession_data = pending_confessions[confession_id]
-    
-    if "approve" in query.data:
-        await context.bot.send_message(
-            chat_id=PUBLIC_CHANNEL,
-            text=f"📢 Confesión anónima:\n\n{confession_data['text']}"
-        )
-        try:
+    if query.data.startswith("approve_") or query.data.startswith("reject_"):
+        confession_id = int(query.data.split("_")[1])
+        
+        if confession_id not in pending_confessions:
+            await query.edit_message_text("⚠️ Esta confesión ya fue procesada.")
+            return
+        
+        confession_data = pending_confessions[confession_id]
+        
+        if "approve" in query.data:
             await context.bot.send_message(
-                chat_id=confession_data["user_id"],
-                text="🎉 Tu confesión ha sido aprobada y publicada."
+                chat_id=PUBLIC_CHANNEL,
+                text=f"📢 Confesión anónima:\n\n{confession_data['text']}"
             )
-        except Exception:
-            pass
-        await query.edit_message_text(f"✅ Confesión {confession_id} aprobada")
-    else:
-        try:
-            await context.bot.send_message(
-                chat_id=confession_data["user_id"],
-                text="❌ Tu confesión no cumple con nuestras normas."
+            try:
+                await context.bot.send_message(
+                    chat_id=confession_data["user_id"],
+                    text="🎉 Tu confesión ha sido aprobada y publicada."
+                )
+            except Exception:
+                pass
+            await query.edit_message_text(f"✅ Confesión {confession_id} aprobada")
+        else:
+            try:
+                await context.bot.send_message(
+                    chat_id=confession_data["user_id"],
+                    text="❌ Tu confesión no cumple con nuestras normas."
+                )
+            except Exception:
+                pass
+            await query.edit_message_text(f"❌ Confesión {confession_id} rechazada")
+        
+        del pending_confessions[confession_id]
+
+    elif query.data.startswith("approve_poll_") or query.data.startswith("reject_poll_"):
+        poll_id = int(query.data.split("_")[2])
+        
+        if poll_id not in pending_polls:
+            await query.edit_message_text("⚠️ Esta encuesta ya fue procesada.")
+            return
+        
+        poll_data = pending_polls[poll_id]
+        
+        if "approve_poll" in query.data:
+            sent_poll = await context.bot.send_poll(
+                chat_id=PUBLIC_CHANNEL,
+                question=poll_data["question"],
+                options=poll_data["options"],
+                is_anonymous=poll_data["is_anonymous"],
+                type=poll_data["type"],
+                allows_multiple_answers=poll_data["allows_multiple_answers"]
             )
-        except Exception:
-            pass
-        await query.edit_message_text(f"❌ Confesión {confession_id} rechazada")
-    
-    del pending_confessions[confession_id]
+            
+            try:
+                await context.bot.send_message(
+                    chat_id=poll_data["user_id"],
+                    text="🎉 Tu encuesta ha sido aprobada y publicada."
+                )
+            except Exception:
+                pass
+            await query.edit_message_text(f"✅ Encuesta {poll_id} aprobada")
+        else:
+            try:
+                await context.bot.send_message(
+                    chat_id=poll_data["user_id"],
+                    text="❌ Tu encuesta no cumple con nuestras normas."
+                )
+            except Exception:
+                pass
+            await query.edit_message_text(f"❌ Encuesta {poll_id} rechazada")
+        
+        del pending_polls[poll_id]
 
 async def run_bot():
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_confession))
-    app.add_handler(MessageHandler(~filters.TEXT & ~filters.COMMAND, handle_non_text))
+    app.add_handler(MessageHandler(filters.POLL & ~filters.COMMAND, handle_confession))
+    app.add_handler(MessageHandler(~filters.TEXT & ~filters.POLL & ~filters.COMMAND, handle_non_text))
     app.add_handler(CallbackQueryHandler(handle_moderation))
     await app.initialize()
     await app.start()
@@ -121,7 +227,7 @@ async def self_ping():
             logging.info("Ping sent to keep server alive")
         except Exception as e:
             logging.warning(f"Ping failed: {e}")
-        await asyncio.sleep(300)  # cada 5 minutos
+        await asyncio.sleep(300)
 
 async def main():
     await asyncio.gather(

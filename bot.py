@@ -33,7 +33,14 @@ user_last_confession = {}
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Hola 👋\n\nEnvíame tu confesión en texto o una encuesta nativa de Telegram y la publicaré anónimamente después de moderación.")
 
-async def confesion(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def confesion(update: Update, context: ContextTypes.DEFAULT_TYPE):    
+    if user_id in user_last_confession:
+        time_since_last = current_time - user_last_confession[user_id]
+        if time_since_last < 60:
+            remaining_time = int(60 - time_since_last)
+            await update.message.reply_text(f"⏰ Por favor espera {remaining_time} segundos antes de enviar otra confesión.")
+            return
+        
     await update.message.reply_text("No se permitirán:\n\nPolítica\nOfensas sin sentido\nMención repretida de una misma persona\nDatos privados ajenos sin consentimiento")
 
 async def handle_non_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -51,13 +58,6 @@ async def handle_confession(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     current_time = time.time()
     
-    if user_id in user_last_confession:
-        time_since_last = current_time - user_last_confession[user_id]
-        if time_since_last < 60:
-            remaining_time = int(60 - time_since_last)
-            await update.message.reply_text(f"⏰ Por favor espera {remaining_time} segundos antes de enviar otra confesión.")
-            return
-
     user_last_confession[user_id] = current_time
     
     confession = update.message.text
@@ -83,13 +83,6 @@ async def handle_poll(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user_id = update.message.from_user.id
     current_time = time.time()
-
-    if user_id in user_last_confession:
-        time_since_last = current_time - user_last_confession[user_id]
-        if time_since_last < 60:
-            remaining_time = int(60 - time_since_last)
-            await update.message.reply_text(f"⏰ Por favor espera {remaining_time} segundos antes de enviar otra encuesta.")
-            return
 
     user_last_confession[user_id] = current_time
     

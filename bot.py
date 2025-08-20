@@ -31,7 +31,10 @@ pending_polls = {}
 user_last_confession = {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Hola 👋\n\nEnvíame tu confesión en texto o una encuesta nativa de Telegram y la publicaré anónimamente después de moderación.\n\nNo se permitiran:\nPolitica\nOfensas sin sentido\nMencion repretida de una misma persona\nDatos privados ajenos sin concentimiento")
+    await update.message.reply_text("Hola 👋\n\nEnvíame tu confesión en texto o una encuesta nativa de Telegram y la publicaré anónimamente después de moderación.")
+
+async def confesion(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("No se permitirán:\n\nPolítica\nOfensas sin sentido\nMención repretida de una misma persona\nDatos privados ajenos sin consentimiento")
 
 async def handle_non_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.poll:
@@ -217,6 +220,7 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def run_bot():
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("confesion", confesion))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_confession))
     app.add_handler(MessageHandler(filters.POLL & ~filters.COMMAND, handle_confession))
     app.add_handler(MessageHandler(~filters.TEXT & ~filters.POLL & ~filters.COMMAND, handle_non_text))

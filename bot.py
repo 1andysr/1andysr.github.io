@@ -123,78 +123,96 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    if query.data.startswith("approve_") or query.data.startswith("reject_"):
-        confession_id = int(query.data.split("_")[1])
-        
-        if confession_id not in pending_confessions:
-            await query.edit_message_text("⚠️ Esta confesión ya fue procesada.")
-            return
-        
-        confession_data = pending_confessions[confession_id]
-        
-        if "approve" in query.data:
-            await context.bot.send_message(
-                chat_id=PUBLIC_CHANNEL,
-                text=f"📢 Confesión anónima:\n\n{confession_data['text']}"
-            )
-            try:
-                await context.bot.send_message(
-                    chat_id=confession_data["user_id"],
-                    text="🎉 Tu confesión ha sido aprobada y publicada."
-                )
-            except Exception:
-                pass
-            await query.edit_message_text(f"✅ Confesión {confession_id} aprobada")
-        else:
-            try:
-                await context.bot.send_message(
-                    chat_id=confession_data["user_id"],
-                    text="❌ Tu confesión no cumple con nuestras normas."
-                )
-            except Exception:
-                pass
-            await query.edit_message_text(f"❌ Confesión {confession_id} rechazada")
-        
-        del pending_confessions[confession_id]
-
-    elif query.data.startswith("approve_poll_") or query.data.startswith("reject_poll_"):
-        poll_id = int(query.data.split("_")[2])
-        
-        if poll_id not in pending_polls:
-            await query.edit_message_text("⚠️ Esta encuesta ya fue procesada.")
-            return
-        
-        poll_data = pending_polls[poll_id]
-        
-        if "approve_poll" in query.data:
-            sent_poll = await context.bot.send_poll(
-                chat_id=PUBLIC_CHANNEL,
-                question=poll_data["question"],
-                options=poll_data["options"],
-                is_anonymous=poll_data["is_anonymous"],
-                type=poll_data["type"],
-                allows_multiple_answers=poll_data["allows_multiple_answers"]
-            )
+    # Procesar encuestas primero (tienen "poll" en el callback_data)
+    if "poll" in query.data:
+        try:
+            # Para encuestas, el formato es "approve_poll_123" o "reject_poll_123"
+            parts = query.data.split("_")
+            action = parts[0]  # "approve" o "reject"
+            poll_id = int(parts[2])
             
-            try:
-                await context.bot.send_message(
-                    chat_id=poll_data["user_id"],
-                    text="🎉 Tu encuesta ha sido aprobada y publicada."
+            if poll_id not in pending_polls:
+                await query.edit_message_text("⚠️ Esta encuesta ya fue procesada.")
+                return
+            
+            poll_data = pending_polls[poll_id]
+            
+            if action == "approve":
+                sent_poll = await context.bot.send_poll(
+                    chat_id=PUBLIC_CHANNEL,
+                    question=poll_data["question"],
+                    options=poll_data["options"],
+                    is_anonymous=poll_data["is_anonymous"],
+                    type=poll_data["type"],
+                    allows_multiple_answers=poll_data["allows_multiple_answers"]
                 )
-            except Exception:
-                pass
-            await query.edit_message_text(f"✅ Encuesta {poll_id} aprobada")
-        else:
-            try:
+                
+                try:
+                    await context.bot.send_message(
+                        chat_id=poll_data["user_id"],
+                        text="🎉 Tu encuesta ha sido aprobada y publicada."
+                    )
+                except Exception:
+                    pass
+                await query.edit_message_text(f"✅ Encuesta {poll_id} aprobada")
+            else:
+                try:
+                    await context.bot.send_message(
+                        chat_id=poll_data["user_id"],
+                        text="❌ Tu encuesta no cumple con nuestras normas."
+                    )
+                except Exception:
+                    pass
+                await query.edit_message_text(f"❌ Encuesta {poll_id} rechazada")
+            
+            del pending_polls[poll_id]
+            
+        except (IndexError, ValueError) as e:
+            logging.error(f"Error procesando encuesta: {e}")
+            await query.edit_message_text("⚠️ Error al procesar la encuesta.")
+    
+    # Procesar confesiones de texto
+    else:
+        try:
+            # Para confesiones, el formato es "approve_123" o "reject_123"
+            parts = query.data.split("_")
+            action = parts[0]  # "approve" o "reject"
+            confession_id = int(parts[1])
+            
+            if confession_id not in pending_confessions:
+                await query.edit_message_text("⚠️ Esta confesión ya fue procesada.")
+                return
+            
+            confession_data = pending_confessions[confession_id]
+            
+            if action == "approve":
                 await context.bot.send_message(
-                    chat_id=poll_data["user_id"],
-                    text="❌ Tu encuesta no cumple con nuestras normas."
+                    chat_id=PUBLIC_CHANNEL,
+                    text=f"📢 Confesión anónima:\n\n{confession_data['text']}"
                 )
-            except Exception:
-                pass
-            await query.edit_message_text(f"❌ Encuesta {poll_id} rechazada")
-        
-        del pending_polls[poll_id]
+                try:
+                    await context.bot.send_message(
+                        chat_id=confession_data["user_id"],
+                        text="🎉 Tu confesión ha sido aprobada y publicada."
+                    )
+                except Exception:
+                    pass
+                await query.edit_message_text(f"✅ Confesión {confession_id} aprobada")
+            else:
+                try:
+                    await context.bot.send_message(
+                        chat_id=confession_data["user_id"],
+                        text="❌ Tu confesión no cumple con nuestras normas."
+                    )
+                except Exception:
+                    pass
+                await query.edit_message_text(f"❌ Confesión {confession_id} rechazada")
+            
+            del pending_confessions[confession_id]
+            
+        except (IndexError, ValueError) as e:
+            logging.error(f"Error procesando confesión: {e}")
+            await query.edit_message_text("⚠️ Error al procesar la confesión.")
 
 async def run_bot():
     app = ApplicationBuilder().token(TOKEN).build()

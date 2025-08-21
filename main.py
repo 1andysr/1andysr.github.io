@@ -4,6 +4,7 @@ import urllib.request
 import logging
 from fastapi import FastAPI
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters
+from utils.backup_manager import backup_manager
 
 from config import TOKEN
 from handlers import (
@@ -17,6 +18,9 @@ logging.basicConfig(
 )
 
 async def run_bot():
+    # Cargar backup 
+    await backup_manager.load_backup()
+    
     app = ApplicationBuilder().token(TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
@@ -25,6 +29,9 @@ async def run_bot():
     app.add_handler(MessageHandler(filters.POLL & ~filters.COMMAND, handle_confession))
     app.add_handler(MessageHandler(~filters.TEXT & ~filters.POLL & ~filters.COMMAND, handle_non_text))
     app.add_handler(CallbackQueryHandler(handle_moderation))
+    
+    # Iniciar backup automático en segundo plano
+    asyncio.create_task(backup_manager.start_auto_backup())
     
     await app.initialize()
     await app.start()

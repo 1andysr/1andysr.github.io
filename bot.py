@@ -479,11 +479,19 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     del pending_confessions[item_id]
             
             horas_text = f"{horas} hora{'s' if horas > 1 else ''}"
-            await query.edit_message_text(f"⚖️ Usuario {user_id} sancionado por {horas_text}.")
+            
+            # Para mensajes de voz, necesitamos editar el caption en lugar del texto
+            if query.message.voice:
+                await query.edit_message_caption(f"⚖️ Usuario {user_id} sancionado por {horas_text}.")
+            else:
+                await query.edit_message_text(f"⚖️ Usuario {user_id} sancionado por {horas_text}.")
             
         except (IndexError, ValueError) as e:
             logging.error(f"Error aplicando ban: {e}")
-            await query.edit_message_text("⚠️ Error al aplicar la sanción.")
+            if query.message.voice:
+                await query.edit_message_caption("⚠️ Error al aplicar la sanción.")
+            else:
+                await query.edit_message_text("⚠️ Error al aplicar la sanción.")
         return
 
     # Manejar cancelación
@@ -493,11 +501,17 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             item_id = int(parts[1])
             item_type = parts[2]
             
-            await query.edit_message_text("❌ Sanción cancelada.")
+            if query.message.voice:
+                await query.edit_message_caption("❌ Sanción cancelada.")
+            else:
+                await query.edit_message_text("❌ Sanción cancelada.")
                     
         except (IndexError, ValueError) as e:
             logging.error(f"Error cancelando sanción: {e}")
-            await query.edit_message_text("⚠️ Error al cancelar la sanción.")
+            if query.message.voice:
+                await query.edit_message_caption("⚠️ Error al cancelar la sanción.")
+            else:
+                await query.edit_message_text("⚠️ Error al cancelar la sanción.")
         return
 
     # Procesamiento normal (aprobaciones/rechazos)
@@ -514,9 +528,16 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 item_type = parts[1]
                 item_id = int(parts[2])
             
+            # Función auxiliar para editar el mensaje según el tipo
+            async def edit_moderation_message(text):
+                if query.message.voice:
+                    await query.edit_message_caption(text)
+                else:
+                    await query.edit_message_text(text)
+            
             if item_type == "poll":
                 if item_id not in pending_polls:
-                    await query.edit_message_text("⚠️ Esta encuesta ya fue procesada.")
+                    await edit_moderation_message("⚠️ Esta encuesta ya fue procesada.")
                     return
                 
                 if action == "approve":
@@ -528,7 +549,7 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                     except Exception:
                         pass
-                    await query.edit_message_text(f"✅ Encuesta {item_id} aprobada")
+                    await edit_moderation_message(f"✅ Encuesta {item_id} aprobada")
                 else:
                     user_id = await reject_item(item_id, "poll")
                     try:
@@ -538,11 +559,11 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                     except Exception:
                         pass
-                    await query.edit_message_text(f"❌ Encuesta {item_id} rechazada")
+                    await edit_moderation_message(f"❌ Encuesta {item_id} rechazada")
             
             elif item_type == "voice":
                 if item_id not in pending_voices:
-                    await query.edit_message_text("⚠️ Este mensaje de voz ya fue procesado.")
+                    await edit_moderation_message("⚠️ Este mensaje de voz ya fue procesado.")
                     return
                 
                 if action == "approve":
@@ -554,7 +575,7 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                     except Exception:
                         pass
-                    await query.edit_message_text(f"✅ Mensaje de voz {item_id} aprobado")
+                    await edit_moderation_message(f"✅ Mensaje de voz {item_id} aprobado")
                 else:
                     user_id = await reject_item(item_id, "voice")
                     try:
@@ -564,11 +585,11 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                     except Exception:
                         pass
-                    await query.edit_message_text(f"❌ Mensaje de voz {item_id} rechazado")
+                    await edit_moderation_message(f"❌ Mensaje de voz {item_id} rechazado")
             
             else:  # Texto
                 if item_id not in pending_confessions:
-                    await query.edit_message_text("⚠️ Esta confesión ya fue procesada.")
+                    await edit_moderation_message("⚠️ Esta confesión ya fue procesada.")
                     return
                 
                 if action == "approve":
@@ -580,7 +601,7 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                     except Exception:
                         pass
-                    await query.edit_message_text(f"✅ Confesión {item_id} aprobada")
+                    await edit_moderation_message(f"✅ Confesión {item_id} aprobada")
                 else:
                     user_id = await reject_item(item_id, "text")
                     try:
@@ -590,11 +611,14 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                     except Exception:
                         pass
-                    await query.edit_message_text(f"❌ Confesión {item_id} rechazada")
+                    await edit_moderation_message(f"❌ Confesión {item_id} rechazada")
             
         except (IndexError, ValueError) as e:
             logging.error(f"Error procesando moderación: {e}")
-            await query.edit_message_text("⚠️ Error al procesar la moderación.")
+            if query.message.voice:
+                await query.edit_message_caption("⚠️ Error al procesar la moderación.")
+            else:
+                await query.edit_message_text("⚠️ Error al procesar la moderación.")
 
 async def run_bot():
     # Cargar backup al iniciar

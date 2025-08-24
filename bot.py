@@ -31,7 +31,7 @@ logging.basicConfig(
 # Variables globales
 pending_confessions = {}
 pending_polls = {}
-pending_audios = {}  # Nuevo diccionario para audios
+pending_voices = {}  # Cambiado de pending_audios a pending_voices
 user_last_confession = {}
 banned_users = {}
 
@@ -45,7 +45,7 @@ class BackupManager:
             backup_data = {
                 'pending_confessions': pending_confessions,
                 'pending_polls': pending_polls,
-                'pending_audios': pending_audios,
+                'pending_voices': pending_voices,  # Cambiado aquí
                 'banned_users': banned_users,
                 'user_last_confession': user_last_confession,
                 'backup_timestamp': datetime.now().isoformat()
@@ -67,11 +67,11 @@ class BackupManager:
                 
                 pending_confessions.update(backup_data.get('pending_confessions', {}))
                 pending_polls.update(backup_data.get('pending_polls', {}))
-                pending_audios.update(backup_data.get('pending_audios', {}))
+                pending_voices.update(backup_data.get('pending_voices', {}))  # Cambiado aquí
                 banned_users.update(backup_data.get('banned_users', {}))
                 user_last_confession.update(backup_data.get('user_last_confession', {}))
                 
-                logging.info(f"📂 Backup cargado: {len(pending_confessions)} confesiones, {len(pending_polls)} encuestas, {len(pending_audios)} audios")
+                logging.info(f"📂 Backup cargado: {len(pending_confessions)} confesiones, {len(pending_polls)} encuestas, {len(pending_voices)} mensajes de voz")
                 return True
                 
         except Exception as e:
@@ -109,7 +109,7 @@ def generate_id(*args) -> int:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Hola 👋\n\nEnvíame tu confesión en texto, audio o una encuesta nativa de Telegram "
+        "Hola 👋\n\nEnvíame tu confesión en texto, mensaje de voz o una encuesta nativa de Telegram "
         "y la publicaré anónimamente después de moderación."
     )
 
@@ -138,8 +138,8 @@ async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await backup_manager.save_backup()
     await update.message.reply_text("💾 Backup realizado exitosamente!")
 
-async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Manejar audios como confesiones"""
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manejar mensajes de voz como confesiones"""
     if update.message.chat.type != "private":
         return
 
@@ -160,33 +160,33 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_time = time.time()
     user_last_confession[user_id] = current_time
     
-    audio = update.message.audio
+    voice = update.message.voice
     
-    # Guardar información del audio
-    audio_id = generate_id(user_id, audio.file_id, current_time)
+    # Guardar información del mensaje de voz
+    voice_id = generate_id(user_id, voice.file_id, current_time)
     
-    pending_audios[audio_id] = {
-        "file_id": audio.file_id,
-        "duration": audio.duration,
-        "file_size": audio.file_size,
+    pending_voices[voice_id] = {
+        "file_id": voice.file_id,
+        "duration": voice.duration,
+        "file_size": voice.file_size,
         "user_id": user_id,
         "timestamp": current_time
     }
     
     await send_to_moderation(
         context, 
-        audio_id, 
+        voice_id, 
         None, 
         user_id, 
-        is_audio=True,
-        audio_data=pending_audios[audio_id]
+        is_voice=True,
+        voice_data=pending_voices[voice_id]
     )
     
-    await update.message.reply_text("✋ Tu audio confesión ha sido enviada a moderación.")
+    await update.message.reply_text("✋ Tu mensaje de voz ha sido enviado a moderación.")
 
 async def handle_non_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message.poll and update.message.chat.type != "private":
-        await update.message.reply_text("⚠️ Solo acepto confesiones en texto, audio o encuestas nativas de Telegram.")
+    if not update.message.poll and not update.message.voice and update.message.chat.type != "private":
+        await update.message.reply_text("⚠️ Solo acepto confesiones en texto, mensajes de voz o encuestas nativas de Telegram.")
 
 async def handle_confession(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat.type != "private":
@@ -203,6 +203,11 @@ async def handle_confession(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Verificar si es encuesta
     if update.message.poll:
         await handle_poll(update, context)
+        return
+
+    # Verificar si es mensaje de voz
+    if update.message.voice:
+        await handle_voice(update, context)
         return
 
     # Verificar rate limit
@@ -276,7 +281,7 @@ async def handle_poll(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text("✋ Tu encuesta ha sido enviada a moderación.")
 
-async def send_to_moderation(context, item_id, confession_text, user_id, is_poll=False, is_audio=False, poll_data=None, audio_data=None):
+async def send_to_moderation(context, item_id, confession_text, user_id, is_poll=False, is_voice=False, poll_data=None, voice_data=None):
     if is_poll:
         options_text = "\n".join([f"• {option}" for option in poll_data["options"]])
         message_text = (
@@ -286,13 +291,13 @@ async def send_to_moderation(context, item_id, confession_text, user_id, is_poll
             f"Múltiples respuestas: {'Sí' if poll_data['allows_multiple_answers'] else 'No'}"
         )
         callback_prefix = "poll"
-    elif is_audio:
+    elif is_voice:
         message_text = (
-            f"🎵 Nueva audio confesión (ID: {item_id}) - User: {user_id}:\n\n"
-            f"Duración: {audio_data['duration']} segundos\n"
-            f"Tamaño: {audio_data['file_size']} bytes"
+            f"🎤 Nuevo mensaje de voz (ID: {item_id}) - User: {user_id}:\n\n"
+            f"Duración: {voice_data['duration']} segundos\n"
+            f"Tamaño: {voice_data['file_size']} bytes"
         )
-        callback_prefix = "audio"
+        callback_prefix = "voice"
     else:
         message_text = f"📝 Nueva confesión (ID: {item_id}) - User: {user_id}:\n\n{confession_text}"
         callback_prefix = ""
@@ -316,10 +321,10 @@ async def send_to_moderation(context, item_id, confession_text, user_id, is_poll
         ]
     ]
 
-    if is_audio:
-        await context.bot.send_audio(
+    if is_voice:
+        await context.bot.send_voice(
             chat_id=MODERATION_GROUP_ID,
-            audio=audio_data['file_id'],
+            voice=voice_data['file_id'],
             caption=message_text,
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
@@ -378,15 +383,15 @@ async def approve_item(item_id, item_type, context):
         del pending_polls[item_id]
         return poll_data["user_id"], "encuesta"
     
-    elif item_type == "audio":
-        audio_data = pending_audios[item_id]
-        await context.bot.send_audio(
+    elif item_type == "voice":
+        voice_data = pending_voices[item_id]
+        await context.bot.send_voice(
             chat_id=PUBLIC_CHANNEL,
-            audio=audio_data["file_id"],
-            caption="🎵 Confesión anónima en audio"
+            voice=voice_data["file_id"],
+            caption="🎤 Confesión anónima en mensaje de voz"
         )
-        del pending_audios[item_id]
-        return audio_data["user_id"], "audio confesión"
+        del pending_voices[item_id]
+        return voice_data["user_id"], "mensaje de voz"
     
     else:  # Texto
         confession_data = pending_confessions[item_id]
@@ -402,9 +407,9 @@ async def reject_item(item_id, item_type):
     if item_type == "poll":
         user_id = pending_polls[item_id]["user_id"]
         del pending_polls[item_id]
-    elif item_type == "audio":
-        user_id = pending_audios[item_id]["user_id"]
-        del pending_audios[item_id]
+    elif item_type == "voice":
+        user_id = pending_voices[item_id]["user_id"]
+        del pending_voices[item_id]
     else:
         user_id = pending_confessions[item_id]["user_id"]
         del pending_confessions[item_id]
@@ -418,7 +423,7 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data.startswith("sancionar_"):
         try:
             parts = query.data.split("_")
-            item_type = parts[1]  # poll, audio, o vacío para texto
+            item_type = parts[1]  # poll, voice, o vacío para texto
             item_id = int(parts[2])
             
             if item_type == "poll":
@@ -426,11 +431,11 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await query.edit_message_text("⚠️ Esta encuesta ya fue procesada.")
                     return
                 user_id = pending_polls[item_id]["user_id"]
-            elif item_type == "audio":
-                if item_id not in pending_audios:
-                    await query.edit_message_text("⚠️ Este audio ya fue procesado.")
+            elif item_type == "voice":
+                if item_id not in pending_voices:
+                    await query.edit_message_text("⚠️ Este mensaje de voz ya fue procesado.")
                     return
-                user_id = pending_audios[item_id]["user_id"]
+                user_id = pending_voices[item_id]["user_id"]
             else:
                 if item_id not in pending_confessions:
                     await query.edit_message_text("⚠️ Esta confesión ya fue procesada.")
@@ -460,9 +465,9 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if item_type == "poll":
                 if item_id in pending_polls:
                     del pending_polls[item_id]
-            elif item_type == "audio":
-                if item_id in pending_audios:
-                    del pending_audios[item_id]
+            elif item_type == "voice":
+                if item_id in pending_voices:
+                    del pending_voices[item_id]
             else:
                 if item_id in pending_confessions:
                     del pending_confessions[item_id]
@@ -524,31 +529,31 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         pass
                     await query.edit_message_text(f"❌ Encuesta {item_id} rechazada")
             
-            elif item_type == "audio":
-                if item_id not in pending_audios:
-                    await query.edit_message_text("⚠️ Este audio ya fue procesado.")
+            elif item_type == "voice":
+                if item_id not in pending_voices:
+                    await query.edit_message_text("⚠️ Este mensaje de voz ya fue procesado.")
                     return
                 
                 if action == "approve":
-                    user_id, item_type_str = await approve_item(item_id, "audio", context)
+                    user_id, item_type_str = await approve_item(item_id, "voice", context)
                     try:
                         await context.bot.send_message(
                             chat_id=user_id,
-                            text="🎉 Tu audio confesión ha sido aprobada y publicada."
+                            text="🎉 Tu mensaje de voz ha sido aprobado y publicado."
                         )
                     except Exception:
                         pass
-                    await query.edit_message_text(f"✅ Audio confesión {item_id} aprobada")
+                    await query.edit_message_text(f"✅ Mensaje de voz {item_id} aprobado")
                 else:
-                    user_id = await reject_item(item_id, "audio")
+                    user_id = await reject_item(item_id, "voice")
                     try:
                         await context.bot.send_message(
                             chat_id=user_id,
-                            text="❌ Tu audio confesión no cumple con nuestras normas."
+                            text="❌ Tu mensaje de voz no cumple con nuestras normas."
                         )
                     except Exception:
                         pass
-                    await query.edit_message_text(f"❌ Audio confesión {item_id} rechazada")
+                    await query.edit_message_text(f"❌ Mensaje de voz {item_id} rechazado")
             
             else:  # Texto
                 if item_id not in pending_confessions:
@@ -592,8 +597,8 @@ async def run_bot():
     
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_confession))
     app.add_handler(MessageHandler(filters.POLL & ~filters.COMMAND, handle_poll))
-    app.add_handler(MessageHandler(filters.AUDIO & ~filters.COMMAND, handle_audio))
-    app.add_handler(MessageHandler(~filters.TEXT & ~filters.POLL & ~filters.AUDIO & ~filters.COMMAND, handle_non_text))
+    app.add_handler(MessageHandler(filters.VOICE & ~filters.COMMAND, handle_voice))  # Cambiado a filters.VOICE
+    app.add_handler(MessageHandler(~filters.TEXT & ~filters.POLL & ~filters.VOICE & ~filters.COMMAND, handle_non_text))
     
     app.add_handler(CallbackQueryHandler(handle_moderation))
     

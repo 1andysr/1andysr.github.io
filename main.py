@@ -25,6 +25,7 @@ async def run_bot():
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("confesion", confesion))
+    app.add_handler(CommandHandler("backup", backup_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_confession))
     app.add_handler(MessageHandler(filters.POLL & ~filters.COMMAND, handle_confession))
     app.add_handler(MessageHandler(~filters.TEXT & ~filters.POLL & ~filters.COMMAND, handle_non_text))

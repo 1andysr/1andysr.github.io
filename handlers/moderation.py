@@ -51,7 +51,8 @@ async def handle_sancion_menu(query, item_id, is_poll, user_id):
         [
             InlineKeyboardButton("1 hora", callback_data=f"ban_1_{item_id}_{prefix}_{user_id}"),
             InlineKeyboardButton("2 horas", callback_data=f"ban_2_{item_id}_{prefix}_{user_id}"),
-            InlineKeyboardButton("4 horas", callback_data=f"ban_4_{item_id}_{prefix}_{user_id}")
+            InlineKeyboardButton("4 horas", callback_data=f"ban_4_{item_id}_{prefix}_{user_id}"),
+            InlineKeyboardButton("24 horas", callback_data=f"ban_24_{item_id}_{prefix}_{user_id}")
         ],
         [
             InlineKeyboardButton("↩️ Cancelar", callback_data=f"cancel_{item_id}_{prefix}")

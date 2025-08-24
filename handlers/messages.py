@@ -6,7 +6,7 @@ from ..utils.helpers import is_user_banned, check_rate_limit, generate_id
 from .moderation import send_to_moderation
 
 async def handle_non_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message.poll:
+    if not update.message.poll && update.message.chat.type != "private":
         await update.message.reply_text("⚠️ Solo acepto confesiones en texto o encuestas nativas de Telegram.")
 
 async def handle_confession(update: Update, context: ContextTypes.DEFAULT_TYPE):

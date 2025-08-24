@@ -27,9 +27,6 @@ async def confesion(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
 async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Comando para hacer backup manual"""
-    if str(update.message.chat.id) != str(MODERATION_GROUP_ID):
-        return
-    
+    """Comando para hacer backup manual"""    
     await backup_manager.save_backup()
     await update.message.reply_text("💾 Backup realizado exitosamente!")    

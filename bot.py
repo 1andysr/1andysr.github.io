@@ -1,6 +1,7 @@
 import os
 import logging
 import time
+import json
 from fastapi import FastAPI
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Poll
 from telegram.ext import (
@@ -15,6 +16,7 @@ from dotenv import load_dotenv
 import uvicorn
 import asyncio
 import urllib.request
+from datetime import datetime
 
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
@@ -26,90 +28,208 @@ logging.basicConfig(
     level=logging.INFO
 )
 
+# Variables globales
 pending_confessions = {}
 pending_polls = {}
+pending_audios = {}  # Nuevo diccionario para audios
 user_last_confession = {}
-banned_users = {}  # Diccionario para usuarios baneados: {user_id: unban_timestamp}
+banned_users = {}
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Hola 👋\n\nEnvíame tu confesión en texto o una encuesta nativa de Telegram y la publicaré anónimamente después de moderación.")
+class BackupManager:
+    def __init__(self, backup_file="bot_backup.json"):
+        self.backup_file = backup_file
+        self.backup_interval = 300
+    
+    async def save_backup(self):
+        try:
+            backup_data = {
+                'pending_confessions': pending_confessions,
+                'pending_polls': pending_polls,
+                'pending_audios': pending_audios,
+                'banned_users': banned_users,
+                'user_last_confession': user_last_confession,
+                'backup_timestamp': datetime.now().isoformat()
+            }
+            
+            with open(self.backup_file, 'w', encoding='utf-8') as f:
+                json.dump(backup_data, f, ensure_ascii=False, indent=2)
+            
+            logging.info(f"💾 Backup guardado: {self.backup_file}")
+            
+        except Exception as e:
+            logging.error(f"❌ Error guardando backup: {e}")
+    
+    async def load_backup(self):
+        try:
+            if os.path.exists(self.backup_file):
+                with open(self.backup_file, 'r', encoding='utf-8') as f:
+                    backup_data = json.load(f)
+                
+                pending_confessions.update(backup_data.get('pending_confessions', {}))
+                pending_polls.update(backup_data.get('pending_polls', {}))
+                pending_audios.update(backup_data.get('pending_audios', {}))
+                banned_users.update(backup_data.get('banned_users', {}))
+                user_last_confession.update(backup_data.get('user_last_confession', {}))
+                
+                logging.info(f"📂 Backup cargado: {len(pending_confessions)} confesiones, {len(pending_polls)} encuestas, {len(pending_audios)} audios")
+                return True
+                
+        except Exception as e:
+            logging.error(f"❌ Error cargando backup: {e}")
+        
+        return False
+    
+    async def start_auto_backup(self):
+        while True:
+            await asyncio.sleep(self.backup_interval)
+            await self.save_backup()
 
-async def confesion(update: Update, context: ContextTypes.DEFAULT_TYPE):  
-    user_id = update.message.from_user.id
+backup_manager = BackupManager()
+
+def is_user_banned(user_id: int) -> tuple:
     current_time = time.time()
-    
-    # Verificar si el usuario está baneado
-    if user_id in banned_users:
-        if current_time < banned_users[user_id]:
-            remaining_time = int(banned_users[user_id] - current_time)
-            hours = remaining_time // 3600
-            minutes = (remaining_time % 3600) // 60
-            await update.message.reply_text(f"🚫 Estás baneado. Tiempo restante: {hours}h {minutes}m")
-            return
-    
+    if user_id in banned_users and current_time < banned_users[user_id]:
+        remaining_time = int(banned_users[user_id] - current_time)
+        hours = remaining_time // 3600
+        minutes = (remaining_time % 3600) // 60
+        return True, f"🚫 Estás baneado. Tiempo restante: {hours}h {minutes}m"
+    return False, ""
+
+def check_rate_limit(user_id: int) -> tuple:
+    current_time = time.time()
     if user_id in user_last_confession:
         time_since_last = current_time - user_last_confession[user_id]
         if time_since_last < 60:
             remaining_time = int(60 - time_since_last)
-            await update.message.reply_text(f"⏰ Por favor espera {remaining_time} segundos antes de enviar otra confesión.")
-            return
+            return True, f"⏰ Por favor espera {remaining_time} segundos antes de enviar otra confesión."
+    return False, ""
 
-    await update.message.reply_text("No se permitirán:\n\nPolítica\nOfensas sin sentido\nMención repetida de una misma persona\nDatos privados ajenos sin consentimiento")
+def generate_id(*args) -> int:
+    return abs(hash("".join(str(arg) for arg in args))) % (10**8)
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Hola 👋\n\nEnvíame tu confesión en texto, audio o una encuesta nativa de Telegram "
+        "y la publicaré anónimamente después de moderación."
+    )
+
+async def confesion(update: Update, context: ContextTypes.DEFAULT_TYPE):  
+    user_id = update.message.from_user.id
+    
+    # Verificar si el usuario está baneado
+    banned, message = is_user_banned(user_id)
+    if banned:
+        await update.message.reply_text(message)
+        return
+
+    await update.message.reply_text(
+        "No se permitirán:\n\n"
+        "Política\nOfensas sin sentido\n"
+        "Mención repetida de una misma persona\n"
+        "Datos privados ajenos sin consentimiento"
+    )
+    
+async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Comando para hacer backup manual"""
+    if str(update.message.chat.id) != str(MODERATION_GROUP_ID):
+        await update.message.reply_text("❌ Este comando solo está disponible en el grupo de moderación")
+        return
+    
+    await backup_manager.save_backup()
+    await update.message.reply_text("💾 Backup realizado exitosamente!")
+
+async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manejar audios como confesiones"""
+    if update.message.chat.type != "private":
+        return
+
+    user_id = update.message.from_user.id
+    
+    # Verificar baneo
+    banned, message = is_user_banned(user_id)
+    if banned:
+        await update.message.reply_text(message)
+        return
+
+    # Verificar rate limit
+    rate_limited, message = check_rate_limit(user_id)
+    if rate_limited:
+        await update.message.reply_text(message)
+        return
+
+    current_time = time.time()
+    user_last_confession[user_id] = current_time
+    
+    audio = update.message.audio
+    
+    # Guardar información del audio
+    audio_id = generate_id(user_id, audio.file_id, current_time)
+    
+    pending_audios[audio_id] = {
+        "file_id": audio.file_id,
+        "duration": audio.duration,
+        "file_size": audio.file_size,
+        "user_id": user_id,
+        "timestamp": current_time
+    }
+    
+    await send_to_moderation(
+        context, 
+        audio_id, 
+        None, 
+        user_id, 
+        is_audio=True,
+        audio_data=pending_audios[audio_id]
+    )
+    
+    await update.message.reply_text("✋ Tu audio confesión ha sido enviada a moderación.")
 
 async def handle_non_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message.poll:
-        await update.message.reply_text("⚠️ Solo acepto confesiones en texto o encuestas nativas de Telegram.")
+    if not update.message.poll and update.message.chat.type != "private":
+        await update.message.reply_text("⚠️ Solo acepto confesiones en texto, audio o encuestas nativas de Telegram.")
 
 async def handle_confession(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat.type != "private":
         return
 
     user_id = update.message.from_user.id
-    current_time = time.time()
     
-    # Verificar si el usuario está baneado
-    if user_id in banned_users:
-        if current_time < banned_users[user_id]:
-            remaining_time = int(banned_users[user_id] - current_time)
-            hours = remaining_time // 3600
-            minutes = (remaining_time % 3600) // 60
-            await update.message.reply_text(f"🚫 Estás baneado. Tiempo restante: {hours}h {minutes}m")
-            return
+    # Verificar baneo
+    banned, message = is_user_banned(user_id)
+    if banned:
+        await update.message.reply_text(message)
+        return
 
+    # Verificar si es encuesta
     if update.message.poll:
         await handle_poll(update, context)
         return
 
-    if user_id in user_last_confession:
-        time_since_last = current_time - user_last_confession[user_id]
-        if time_since_last < 60:
-            remaining_time = int(60 - time_since_last)
-            await update.message.reply_text(f"⏰ Por favor espera {remaining_time} segundos antes de enviar otra confesión.")
-            return
+    # Verificar rate limit
+    rate_limited, message = check_rate_limit(user_id)
+    if rate_limited:
+        await update.message.reply_text(message)
+        return
 
+    current_time = time.time()
     user_last_confession[user_id] = current_time
     
     confession = update.message.text
+    confession_id = generate_id(user_id, confession, current_time)
     
-    confession_id = abs(hash(f"{user_id}{confession}{current_time}")) % (10**8)
-    pending_confessions[confession_id] = {"text": confession, "user_id": user_id}
+    pending_confessions[confession_id] = {
+        "text": confession, 
+        "user_id": user_id
+    }
     
-    # Nuevo teclado con botón de sanción
-    keyboard = [
-        [
-            InlineKeyboardButton("✅ Aprobar", callback_data=f"approve_{confession_id}"),
-            InlineKeyboardButton("❌ Rechazar", callback_data=f"reject_{confession_id}")
-        ],
-        [
-            InlineKeyboardButton("⚖️ Sancionar", callback_data=f"sancionar_{confession_id}")
-        ]
-    ]
-    
-    await context.bot.send_message(
-        chat_id=MODERATION_GROUP_ID,
-        text=f"📝 Nueva confesión (ID: {confession_id}) - User: {user_id}:\n\n{confession}",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+    await send_to_moderation(
+        context, 
+        confession_id, 
+        confession, 
+        user_id, 
+        is_poll=False
     )
+    
     await update.message.reply_text("✋ Tu confesión ha sido enviada a moderación.")
 
 async def handle_poll(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -117,29 +237,24 @@ async def handle_poll(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     user_id = update.message.from_user.id
-    current_time = time.time()
     
-    # Verificar si el usuario está baneado
-    if user_id in banned_users:
-        if current_time < banned_users[user_id]:
-            remaining_time = int(banned_users[user_id] - current_time)
-            hours = remaining_time // 3600
-            minutes = (remaining_time % 3600) // 60
-            await update.message.reply_text(f"🚫 Estás baneado. Tiempo restante: {hours}h {minutes}m")
-            return
+    # Verificar baneo
+    banned, message = is_user_banned(user_id)
+    if banned:
+        await update.message.reply_text(message)
+        return
 
-    if user_id in user_last_confession:
-        time_since_last = current_time - user_last_confession[user_id]
-        if time_since_last < 60:
-            remaining_time = int(60 - time_since_last)
-            await update.message.reply_text(f"⏰ Por favor espera {remaining_time} segundos antes de enviar otra confesión/encuesta.")
-            return
-    
+    # Verificar rate limit
+    rate_limited, message = check_rate_limit(user_id)
+    if rate_limited:
+        await update.message.reply_text(message)
+        return
+
+    current_time = time.time()
     user_last_confession[user_id] = current_time
     
     poll = update.message.poll
-
-    poll_id = abs(hash(f"{user_id}{poll.question}{poll.options[0].text}{current_time}")) % (10**8)
+    poll_id = generate_id(user_id, poll.question, poll.options[0].text, current_time)
 
     pending_polls[poll_id] = {
         "question": poll.question,
@@ -150,41 +265,81 @@ async def handle_poll(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "user_id": user_id
     }
     
-    options_text = "\n".join([f"• {option}" for option in pending_polls[poll_id]["options"]])
-    poll_info = f"📊 Nueva encuesta (ID: {poll_id}) - User: {user_id}:\n\nPregunta: {poll.question}\n\nOpciones:\n{options_text}\n\nTipo: {poll.type}\nAnónima: {'Sí' if poll.is_anonymous else 'No'}\nMúltiples respuestas: {'Sí' if poll.allows_multiple_answers else 'No'}"
-    
-    # Nuevo teclado con botón de sanción para encuestas
-    keyboard = [
-        [
-            InlineKeyboardButton("✅ Aprobar Encuesta", callback_data=f"approve_poll_{poll_id}"),
-            InlineKeyboardButton("❌ Rechazar Encuesta", callback_data=f"reject_poll_{poll_id}")
-        ],
-        [
-            InlineKeyboardButton("⚖️ Sancionar", callback_data=f"sancionar_poll_{poll_id}")
-        ]
-    ]
-    
-    await context.bot.send_message(
-        chat_id=MODERATION_GROUP_ID,
-        text=poll_info,
-        reply_markup=InlineKeyboardMarkup(keyboard)
+    await send_to_moderation(
+        context, 
+        poll_id, 
+        None, 
+        user_id, 
+        is_poll=True, 
+        poll_data=pending_polls[poll_id]
     )
     
     await update.message.reply_text("✋ Tu encuesta ha sido enviada a moderación.")
 
-async def handle_sancion_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, item_id: int, is_poll: bool, user_id: int):
-    query = update.callback_query
-    await query.answer()
-    
-    # Crear menú de opciones de sanción
+async def send_to_moderation(context, item_id, confession_text, user_id, is_poll=False, is_audio=False, poll_data=None, audio_data=None):
+    if is_poll:
+        options_text = "\n".join([f"• {option}" for option in poll_data["options"]])
+        message_text = (
+            f"📊 Nueva encuesta (ID: {item_id}) - User: {user_id}:\n\n"
+            f"Pregunta: {poll_data['question']}\n\nOpciones:\n{options_text}\n\n"
+            f"Tipo: {poll_data['type']}\nAnónima: {'Sí' if poll_data['is_anonymous'] else 'No'}\n"
+            f"Múltiples respuestas: {'Sí' if poll_data['allows_multiple_answers'] else 'No'}"
+        )
+        callback_prefix = "poll"
+    elif is_audio:
+        message_text = (
+            f"🎵 Nueva audio confesión (ID: {item_id}) - User: {user_id}:\n\n"
+            f"Duración: {audio_data['duration']} segundos\n"
+            f"Tamaño: {audio_data['file_size']} bytes"
+        )
+        callback_prefix = "audio"
+    else:
+        message_text = f"📝 Nueva confesión (ID: {item_id}) - User: {user_id}:\n\n{confession_text}"
+        callback_prefix = ""
+
     keyboard = [
         [
-            InlineKeyboardButton("1 hora", callback_data=f"ban_1_{item_id}_{'poll' if is_poll else 'conf'}_{user_id}"),
-            InlineKeyboardButton("2 horas", callback_data=f"ban_2_{item_id}_{'poll' if is_poll else 'conf'}_{user_id}"),
-            InlineKeyboardButton("4 horas", callback_data=f"ban_4_{item_id}_{'poll' if is_poll else 'conf'}_{user_id}")
+            InlineKeyboardButton(
+                "✅ Aprobar", 
+                callback_data=f"approve_{callback_prefix}_{item_id}"
+            ),
+            InlineKeyboardButton(
+                "❌ Rechazar", 
+                callback_data=f"reject_{callback_prefix}_{item_id}"
+            )
         ],
         [
-            InlineKeyboardButton("↩️ Cancelar", callback_data=f"cancel_{item_id}_{'poll' if is_poll else 'conf'}")
+            InlineKeyboardButton(
+                "⚖️ Sancionar", 
+                callback_data=f"sancionar_{callback_prefix}_{item_id}"
+            )
+        ]
+    ]
+
+    if is_audio:
+        await context.bot.send_audio(
+            chat_id=MODERATION_GROUP_ID,
+            audio=audio_data['file_id'],
+            caption=message_text,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    else:
+        await context.bot.send_message(
+            chat_id=MODERATION_GROUP_ID,
+            text=message_text,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+async def handle_sancion_menu(query, item_id, item_type, user_id):
+    keyboard = [
+        [
+            InlineKeyboardButton("1 hora", callback_data=f"ban_1_{item_id}_{item_type}_{user_id}"),
+            InlineKeyboardButton("2 horas", callback_data=f"ban_2_{item_id}_{item_type}_{user_id}"),
+            InlineKeyboardButton("4 horas", callback_data=f"ban_4_{item_id}_{item_type}_{user_id}"),
+            InlineKeyboardButton("24 horas", callback_data=f"ban_24_{item_id}_{item_type}_{user_id}")
+        ],
+        [
+            InlineKeyboardButton("↩️ Cancelar", callback_data=f"cancel_{item_id}_{item_type}")
         ]
     ]
     
@@ -198,7 +353,6 @@ async def aplicar_sancion(user_id: int, horas: int, context: ContextTypes.DEFAUL
     unban_time = current_time + (horas * 3600)
     banned_users[user_id] = unban_time
     
-    # Notificar al usuario
     try:
         await context.bot.send_message(
             chat_id=user_id,
@@ -209,6 +363,53 @@ async def aplicar_sancion(user_id: int, horas: int, context: ContextTypes.DEFAUL
     
     return unban_time
 
+async def approve_item(item_id, item_type, context):
+    """Aprobar item según su tipo"""
+    if item_type == "poll":
+        poll_data = pending_polls[item_id]
+        await context.bot.send_poll(
+            chat_id=PUBLIC_CHANNEL,
+            question=poll_data["question"],
+            options=poll_data["options"],
+            is_anonymous=poll_data["is_anonymous"],
+            type=poll_data["type"],
+            allows_multiple_answers=poll_data["allows_multiple_answers"]
+        )
+        del pending_polls[item_id]
+        return poll_data["user_id"], "encuesta"
+    
+    elif item_type == "audio":
+        audio_data = pending_audios[item_id]
+        await context.bot.send_audio(
+            chat_id=PUBLIC_CHANNEL,
+            audio=audio_data["file_id"],
+            caption="🎵 Confesión anónima en audio"
+        )
+        del pending_audios[item_id]
+        return audio_data["user_id"], "audio confesión"
+    
+    else:  # Texto
+        confession_data = pending_confessions[item_id]
+        await context.bot.send_message(
+            chat_id=PUBLIC_CHANNEL,
+            text=f"📢 Confesión anónima:\n\n{confession_data['text']}"
+        )
+        del pending_confessions[item_id]
+        return confession_data["user_id"], "confesión"
+
+async def reject_item(item_id, item_type):
+    """Rechazar item según su tipo"""
+    if item_type == "poll":
+        user_id = pending_polls[item_id]["user_id"]
+        del pending_polls[item_id]
+    elif item_type == "audio":
+        user_id = pending_audios[item_id]["user_id"]
+        del pending_audios[item_id]
+    else:
+        user_id = pending_confessions[item_id]["user_id"]
+        del pending_confessions[item_id]
+    return user_id
+
 async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -217,21 +418,26 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data.startswith("sancionar_"):
         try:
             parts = query.data.split("_")
-            item_id = int(parts[1])
-            is_poll = "poll" in query.data
+            item_type = parts[1]  # poll, audio, o vacío para texto
+            item_id = int(parts[2])
             
-            if is_poll:
+            if item_type == "poll":
                 if item_id not in pending_polls:
                     await query.edit_message_text("⚠️ Esta encuesta ya fue procesada.")
                     return
                 user_id = pending_polls[item_id]["user_id"]
+            elif item_type == "audio":
+                if item_id not in pending_audios:
+                    await query.edit_message_text("⚠️ Este audio ya fue procesado.")
+                    return
+                user_id = pending_audios[item_id]["user_id"]
             else:
                 if item_id not in pending_confessions:
                     await query.edit_message_text("⚠️ Esta confesión ya fue procesada.")
                     return
                 user_id = pending_confessions[item_id]["user_id"]
             
-            await handle_sancion_menu(update, context, item_id, is_poll, user_id)
+            await handle_sancion_menu(query, item_id, item_type, user_id)
             return
             
         except (IndexError, ValueError) as e:
@@ -245,21 +451,24 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parts = query.data.split("_")
             horas = int(parts[1])
             item_id = int(parts[2])
-            tipo = parts[3]
+            item_type = parts[3]
             user_id = int(parts[4])
             
             unban_time = await aplicar_sancion(user_id, horas, context)
             
             # Eliminar el item pendiente
-            if tipo == "poll":
+            if item_type == "poll":
                 if item_id in pending_polls:
                     del pending_polls[item_id]
+            elif item_type == "audio":
+                if item_id in pending_audios:
+                    del pending_audios[item_id]
             else:
                 if item_id in pending_confessions:
                     del pending_confessions[item_id]
             
             horas_text = f"{horas} hora{'s' if horas > 1 else ''}"
-            await query.edit_message_text(f"⚖️ Usuario {user_id} sancionado por {horas_text}. Se desbaneará: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(unban_time))}")
+            await query.edit_message_text(f"⚖️ Usuario {user_id} sancionado por {horas_text}.")
             
         except (IndexError, ValueError) as e:
             logging.error(f"Error aplicando ban: {e}")
@@ -271,47 +480,10 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             parts = query.data.split("_")
             item_id = int(parts[1])
-            tipo = parts[2]
+            item_type = parts[2]
             
-            if tipo == "poll":
-                if item_id in pending_polls:
-                    poll_data = pending_polls[item_id]
-                    # Volver al menú original de la encuesta
-                    options_text = "\n".join([f"• {option}" for option in poll_data["options"]])
-                    poll_info = f"📊 Encuesta (ID: {item_id}) - User: {poll_data['user_id']}:\n\nPregunta: {poll_data['question']}\n\nOpciones:\n{options_text}"
-                    
-                    keyboard = [
-                        [
-                            InlineKeyboardButton("✅ Aprobar Encuesta", callback_data=f"approve_poll_{item_id}"),
-                            InlineKeyboardButton("❌ Rechazar Encuesta", callback_data=f"reject_poll_{item_id}")
-                        ],
-                        [
-                            InlineKeyboardButton("⚖️ Sancionar", callback_data=f"sancionar_poll_{item_id}")
-                        ]
-                    ]
-                    
-                    await query.edit_message_text(
-                        text=poll_info,
-                        reply_markup=InlineKeyboardMarkup(keyboard)
-                    )
-            else:
-                if item_id in pending_confessions:
-                    confession_data = pending_confessions[item_id]
-                    # Volver al menú original de la confesión
-                    keyboard = [
-                        [
-                            InlineKeyboardButton("✅ Aprobar", callback_data=f"approve_{item_id}"),
-                            InlineKeyboardButton("❌ Rechazar", callback_data=f"reject_{item_id}")
-                        ],
-                        [
-                            InlineKeyboardButton("⚖️ Sancionar", callback_data=f"sancionar_{item_id}")
-                        ]
-                    ]
-                    
-                    await query.edit_message_text(
-                        text=f"📝 Confesión (ID: {item_id}) - User: {confession_data['user_id']}:\n\n{confession_data['text']}",
-                        reply_markup=InlineKeyboardMarkup(keyboard)
-                    )
+            # Aquí podrías implementar la lógica para volver al mensaje original
+            await query.edit_message_text("❌ Sanción cancelada.")
                     
         except (IndexError, ValueError) as e:
             logging.error(f"Error cancelando sanción: {e}")
@@ -319,101 +491,115 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Procesamiento normal (aprobaciones/rechazos)
-    if "poll" in query.data:
+    if query.data.startswith("approve_") or query.data.startswith("reject_"):
         try:
             parts = query.data.split("_")
             action = parts[0]
-            poll_id = int(parts[2])
+            item_type = parts[1] if len(parts) > 2 else ""
+            item_id = int(parts[2] if len(parts) > 2 else parts[1])
             
-            if poll_id not in pending_polls:
-                await query.edit_message_text("⚠️ Esta encuesta ya fue procesada.")
-                return
-            
-            poll_data = pending_polls[poll_id]
-            
-            if action == "approve":
-                sent_poll = await context.bot.send_poll(
-                    chat_id=PUBLIC_CHANNEL,
-                    question=poll_data["question"],
-                    options=poll_data["options"],
-                    is_anonymous=poll_data["is_anonymous"],
-                    type=poll_data["type"],
-                    allows_multiple_answers=poll_data["allows_multiple_answers"]
-                )
+            if item_type == "poll":
+                if item_id not in pending_polls:
+                    await query.edit_message_text("⚠️ Esta encuesta ya fue procesada.")
+                    return
                 
-                try:
-                    await context.bot.send_message(
-                        chat_id=poll_data["user_id"],
-                        text="🎉 Tu encuesta ha sido aprobada y publicada."
-                    )
-                except Exception:
-                    pass
-                await query.edit_message_text(f"✅ Encuesta {poll_id} aprobada")
-            else:
-                try:
-                    await context.bot.send_message(
-                        chat_id=poll_data["user_id"],
-                        text="❌ Tu encuesta no cumple con nuestras normas."
-                    )
-                except Exception:
-                    pass
-                await query.edit_message_text(f"❌ Encuesta {poll_id} rechazada")
+                if action == "approve":
+                    user_id, item_type_str = await approve_item(item_id, "poll", context)
+                    try:
+                        await context.bot.send_message(
+                            chat_id=user_id,
+                            text="🎉 Tu encuesta ha sido aprobada y publicada."
+                        )
+                    except Exception:
+                        pass
+                    await query.edit_message_text(f"✅ Encuesta {item_id} aprobada")
+                else:
+                    user_id = await reject_item(item_id, "poll")
+                    try:
+                        await context.bot.send_message(
+                            chat_id=user_id,
+                            text="❌ Tu encuesta no cumple con nuestras normas."
+                        )
+                    except Exception:
+                        pass
+                    await query.edit_message_text(f"❌ Encuesta {item_id} rechazada")
             
-            del pending_polls[poll_id]
+            elif item_type == "audio":
+                if item_id not in pending_audios:
+                    await query.edit_message_text("⚠️ Este audio ya fue procesado.")
+                    return
+                
+                if action == "approve":
+                    user_id, item_type_str = await approve_item(item_id, "audio", context)
+                    try:
+                        await context.bot.send_message(
+                            chat_id=user_id,
+                            text="🎉 Tu audio confesión ha sido aprobada y publicada."
+                        )
+                    except Exception:
+                        pass
+                    await query.edit_message_text(f"✅ Audio confesión {item_id} aprobada")
+                else:
+                    user_id = await reject_item(item_id, "audio")
+                    try:
+                        await context.bot.send_message(
+                            chat_id=user_id,
+                            text="❌ Tu audio confesión no cumple con nuestras normas."
+                        )
+                    except Exception:
+                        pass
+                    await query.edit_message_text(f"❌ Audio confesión {item_id} rechazada")
+            
+            else:  # Texto
+                if item_id not in pending_confessions:
+                    await query.edit_message_text("⚠️ Esta confesión ya fue procesada.")
+                    return
+                
+                if action == "approve":
+                    user_id, item_type_str = await approve_item(item_id, "text", context)
+                    try:
+                        await context.bot.send_message(
+                            chat_id=user_id,
+                            text="🎉 Tu confesión ha sido aprobada y publicada."
+                        )
+                    except Exception:
+                        pass
+                    await query.edit_message_text(f"✅ Confesión {item_id} aprobada")
+                else:
+                    user_id = await reject_item(item_id, "text")
+                    try:
+                        await context.bot.send_message(
+                            chat_id=user_id,
+                            text="❌ Tu confesión no cumple con nuestras normas."
+                        )
+                    except Exception:
+                        pass
+                    await query.edit_message_text(f"❌ Confesión {item_id} rechazada")
             
         except (IndexError, ValueError) as e:
-            logging.error(f"Error procesando encuesta: {e}")
-            await query.edit_message_text("⚠️ Error al procesar la encuesta.")
-    
-    else:
-        try:
-            parts = query.data.split("_")
-            action = parts[0]
-            confession_id = int(parts[1])
-            
-            if confession_id not in pending_confessions:
-                await query.edit_message_text("⚠️ Esta confesión ya fue procesada.")
-                return
-            
-            confession_data = pending_confessions[confession_id]
-            
-            if action == "approve":
-                await context.bot.send_message(
-                    chat_id=PUBLIC_CHANNEL,
-                    text=f"📢 Confesión anónima:\n\n{confession_data['text']}"
-                )
-                try:
-                    await context.bot.send_message(
-                        chat_id=confession_data["user_id"],
-                        text="🎉 Tu confesión ha sido aprobada y publicada."
-                    )
-                except Exception:
-                    pass
-                await query.edit_message_text(f"✅ Confesión {confession_id} aprobada")
-            else:
-                try:
-                    await context.bot.send_message(
-                        chat_id=confession_data["user_id"],
-                        text="❌ Tu confesión no cumple con nuestras normas."
-                    )
-                except Exception:
-                    pass
-                await query.edit_message_text(f"❌ Confesión {confession_id} rechazada")
-            
-            del pending_confessions[confession_id]
-            
-        except (IndexError, ValueError) as e:
-            logging.error(f"Error procesando confesión: {e}")
-            await query.edit_message_text("⚠️ Error al procesar la confesión.")
+            logging.error(f"Error procesando moderación: {e}")
+            await query.edit_message_text("⚠️ Error al procesar la moderación.")
 
 async def run_bot():
+    # Cargar backup al iniciar
+    await backup_manager.load_backup()
+    
     app = ApplicationBuilder().token(TOKEN).build()
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("confesion", confesion))
+    app.add_handler(CommandHandler("backup", backup_cmd))
+    
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_confession))
-    app.add_handler(MessageHandler(filters.POLL & ~filters.COMMAND, handle_confession))
-    app.add_handler(MessageHandler(~filters.TEXT & ~filters.POLL & ~filters.COMMAND, handle_non_text))
+    app.add_handler(MessageHandler(filters.POLL & ~filters.COMMAND, handle_poll))
+    app.add_handler(MessageHandler(filters.AUDIO & ~filters.COMMAND, handle_audio))
+    app.add_handler(MessageHandler(~filters.TEXT & ~filters.POLL & ~filters.AUDIO & ~filters.COMMAND, handle_non_text))
+    
     app.add_handler(CallbackQueryHandler(handle_moderation))
+    
+    # Iniciar backup automático en segundo plano
+    asyncio.create_task(backup_manager.start_auto_backup())
+    
     await app.initialize()
     await app.start()
     await app.updater.start_polling()

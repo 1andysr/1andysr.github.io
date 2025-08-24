@@ -15,6 +15,14 @@ async def send_to_moderation(context, item_id, confession_text, user_id, is_poll
             f"Múltiples respuestas: {'Sí' if poll_data['allows_multiple_answers'] else 'No'}"
         )
         callback_prefix = "poll"
+    elif is_audio:
+        message_text = (
+            f"🎵 Nueva audio confesión (ID: {item_id}) - User: {user_id}:\n\n"
+            f"Duración: {audio_data['duration']} segundos\n"
+            f"Tamaño: {audio_data['file_size']} bytes\n"
+            f"File ID: {audio_data['file_id']}"
+        )
+        callback_prefix = "audio"    
     else:
         message_text = f"📝 Nueva confesión (ID: {item_id}) - User: {user_id}:\n\n{confession_text}"
         callback_prefix = ""
@@ -38,11 +46,19 @@ async def send_to_moderation(context, item_id, confession_text, user_id, is_poll
         ]
     ]
 
-    await context.bot.send_message(
-        chat_id=MODERATION_GROUP_ID,
-        text=message_text,
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    if is_audio:
+        await context.bot.send_audio(
+            chat_id=MODERATION_GROUP_ID,
+            audio=audio_data['file_id'],
+            caption=message_text,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    else:
+        await context.bot.send_message(
+            chat_id=MODERATION_GROUP_ID,
+            text=message_text,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
 async def handle_sancion_menu(query, item_id, is_poll, user_id):
     prefix = "poll" if is_poll else "conf"
@@ -92,6 +108,15 @@ async def approve_item(item_id, is_poll, context):
         )
         del pending_polls[item_id]
         return poll_data["user_id"], "encuesta"
+    elif item_type == "audio":
+        audio_data = pending_audios[item_id]
+        await context.bot.send_audio(
+            chat_id=PUBLIC_CHANNEL,
+            audio=audio_data["file_id"],
+            caption="🎵 Confesión anónima en audio"
+        )
+        del pending_audios[item_id]
+        return audio_data["user_id"], "audio confesión"
     else:
         confession_data = pending_confessions[item_id]
         await context.bot.send_message(

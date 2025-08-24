@@ -11,3 +11,4 @@ pending_confessions = {}
 pending_polls = {}
 user_last_confession = {}
 banned_users = {}
+pending_audios = {}

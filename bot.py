@@ -423,8 +423,14 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data.startswith("sancionar_"):
         try:
             parts = query.data.split("_")
-            item_type = parts[1]  # poll, voice, o vacío para texto
-            item_id = int(parts[2])
+            # Para voz: "sancionar_voice_12345"
+            # Para texto: "sancionar__12345" (nota los dos guiones bajos)
+            if len(parts) == 3:  # Es texto: "sancionar__12345"
+                item_type = ""  # texto
+                item_id = int(parts[2])
+            else:  # Es poll o voice: "sancionar_poll_12345" o "sancionar_voice_12345"
+                item_type = parts[1]
+                item_id = int(parts[2])
             
             if item_type == "poll":
                 if item_id not in pending_polls:
@@ -436,7 +442,7 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await query.edit_message_text("⚠️ Este mensaje de voz ya fue procesado.")
                     return
                 user_id = pending_voices[item_id]["user_id"]
-            else:
+            else:  # texto
                 if item_id not in pending_confessions:
                     await query.edit_message_text("⚠️ Esta confesión ya fue procesada.")
                     return
@@ -487,7 +493,6 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             item_id = int(parts[1])
             item_type = parts[2]
             
-            # Aquí podrías implementar la lógica para volver al mensaje original
             await query.edit_message_text("❌ Sanción cancelada.")
                     
         except (IndexError, ValueError) as e:
@@ -500,8 +505,14 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             parts = query.data.split("_")
             action = parts[0]
-            item_type = parts[1] if len(parts) > 2 else ""
-            item_id = int(parts[2] if len(parts) > 2 else parts[1])
+            
+            # Determinar el tipo de contenido
+            if len(parts) == 3:  # Es texto: "approve__12345" o "reject__12345"
+                item_type = ""  # texto
+                item_id = int(parts[2])
+            else:  # Es poll o voice: "approve_poll_12345" o "reject_voice_12345"
+                item_type = parts[1]
+                item_id = int(parts[2])
             
             if item_type == "poll":
                 if item_id not in pending_polls:

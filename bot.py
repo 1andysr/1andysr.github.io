@@ -296,50 +296,41 @@ async def send_to_moderation(context, item_id, confession_text, user_id, is_poll
             f"Tipo: {poll_data['type']}\nAnónima: {'Sí' if poll_data['is_anonymous'] else 'No'}\n"
             f"Múltiples respuestas: {'Sí' if poll_data['allows_multiple_answers'] else 'No'}"
         )
-        callback_prefix = "poll"
+        item_type_prefix = "poll"
     elif is_voice:
         message_text = (
             f"🎤 Nuevo mensaje de voz (ID: {item_id}) - User: {user_id}:\n\n"
             f"Duración: {voice_data['duration']} segundos\n"
             f"Tamaño: {voice_data['file_size']} bytes"
         )
-        callback_prefix = "voice"
+        item_type_prefix = "voice"
     else:
         message_text = f"📝 Nueva confesión (ID: {item_id}) - User: {user_id}:\n\n{confession_text}"
-        callback_prefix = ""
+        item_type_prefix = ""
 
     if is_voice:
         await context.bot.send_voice(
             chat_id=MODERATION_GROUP_ID,
             voice=voice_data['file_id'],
             caption=message_text,
-            reply_markup=create_moderation_keyboard(item_id, callback_prefix)
+            reply_markup=create_moderation_keyboard(item_id, item_type_prefix)
         )
     else:
         await context.bot.send_message(
             chat_id=MODERATION_GROUP_ID,
             text=message_text,
-            reply_markup=create_moderation_keyboard(item_id, callback_prefix)
+            reply_markup=create_moderation_keyboard(item_id, item_type_prefix)
         )
 
 def create_moderation_keyboard(item_id, item_type_prefix=""):
     """Crear teclado de moderación (Aprobar, Rechazar, Sancionar)"""
-    return InlineKeyboardMarkup(keyboard = [
+    return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton(
-                "✅ Aprobar", 
-                callback_data=f"approve_{callback_prefix}_{item_id}"
-            ),
-            InlineKeyboardButton(
-                "❌ Rechazar", 
-                callback_data=f"reject_{callback_prefix}_{item_id}"
-            )
+            InlineKeyboardButton("✅ Aprobar", callback_data=f"approve_{item_type_prefix}_{item_id}"),
+            InlineKeyboardButton("❌ Rechazar", callback_data=f"reject_{item_type_prefix}_{item_id}")
         ],
         [
-            InlineKeyboardButton(
-                "⚖️ Sancionar", 
-                callback_data=f"sancionar_{callback_prefix}_{item_id}"
-            )
+            InlineKeyboardButton("⚖️ Sancionar", callback_data=f"sancionar_{item_type_prefix}_{item_id}")
         ]
     ])
 
@@ -512,7 +503,7 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.delete()
         return
 
-    # Manejar cancelación - REGRESAR AL MENÚ ORIGINAL (SIMPLIFICADO)
+    # Manejar cancelación
     if query.data.startswith("cancel_"):
         try:
             parts = query.data.split("_")

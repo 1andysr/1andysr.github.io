@@ -178,6 +178,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         voice_id, 
         None, 
         user_id, 
+        is_poll=False,
         is_voice=True,
         voice_data=pending_voices[voice_id]
     )
@@ -185,7 +186,10 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✋ Tu mensaje de voz ha sido enviado a moderación.")
 
 async def handle_non_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message.poll and not update.message.voice and update.message.chat.type != "private":
+    if update.message.chat.type != "private":
+        return
+        
+    if not update.message.poll and not update.message.voice:
         await update.message.reply_text("⚠️ Solo acepto confesiones en texto, mensajes de voz o encuestas nativas de Telegram.")
 
 async def handle_confession(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -232,7 +236,8 @@ async def handle_confession(update: Update, context: ContextTypes.DEFAULT_TYPE):
         confession_id, 
         confession, 
         user_id, 
-        is_poll=False
+        is_poll=False,
+        is_voice=False
     )
     
     await update.message.reply_text("✋ Tu confesión ha sido enviada a moderación.")
@@ -276,6 +281,7 @@ async def handle_poll(update: Update, context: ContextTypes.DEFAULT_TYPE):
         None, 
         user_id, 
         is_poll=True, 
+        is_voice=False,
         poll_data=pending_polls[poll_id]
     )
     
@@ -302,7 +308,23 @@ async def send_to_moderation(context, item_id, confession_text, user_id, is_poll
         message_text = f"📝 Nueva confesión (ID: {item_id}) - User: {user_id}:\n\n{confession_text}"
         callback_prefix = ""
 
-    keyboard = [
+    if is_voice:
+        await context.bot.send_voice(
+            chat_id=MODERATION_GROUP_ID,
+            voice=voice_data['file_id'],
+            caption=message_text,
+            reply_markup=create_moderation_keyboard(item_id, callback_prefix)
+        )
+    else:
+        await context.bot.send_message(
+            chat_id=MODERATION_GROUP_ID,
+            text=message_text,
+            reply_markup=create_moderation_keyboard(item_id, callback_prefix)
+        )
+
+def create_moderation_keyboard(item_id, item_type_prefix=""):
+    """Crear teclado de moderación (Aprobar, Rechazar, Sancionar)"""
+    return InlineKeyboardMarkup(keyboard = [
         [
             InlineKeyboardButton(
                 "✅ Aprobar", 
@@ -319,39 +341,40 @@ async def send_to_moderation(context, item_id, confession_text, user_id, is_poll
                 callback_data=f"sancionar_{callback_prefix}_{item_id}"
             )
         ]
-    ]
-
-    if is_voice:
-        await context.bot.send_voice(
-            chat_id=MODERATION_GROUP_ID,
-            voice=voice_data['file_id'],
-            caption=message_text,
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    else:
-        await context.bot.send_message(
-            chat_id=MODERATION_GROUP_ID,
-            text=message_text,
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+    ])
 
 async def handle_sancion_menu(query, item_id, item_type, user_id):
+    """Mostrar menú de sanciones"""
+    # Determinar el prefijo correcto para el callback
+    callback_prefix = ""
+    if item_type == "poll":
+        callback_prefix = "poll"
+    elif item_type == "voice":
+        callback_prefix = "voice"
+    
     keyboard = [
         [
             InlineKeyboardButton("1 hora", callback_data=f"ban_1_{item_id}_{item_type}_{user_id}"),
             InlineKeyboardButton("2 horas", callback_data=f"ban_2_{item_id}_{item_type}_{user_id}"),
-            InlineKeyboardButton("4 horas", callback_data=f"ban_4_{item_id}_{item_type}_{user_id}"),
-            InlineKeyboardButton("24 horas", callback_data=f"ban_24_{item_id}_{item_type}_{user_id}")
+            InlineKeyboardButton("4 horas", callback_data=f"ban_4_{item_id}_{item_type}_{user_id}"),            
         ],
         [
-            InlineKeyboardButton("↩️ Cancelar", callback_data=f"cancel_{item_id}_{item_type}")
+            InlineKeyboardButton("24 horas", callback_data=f"ban_24_{item_id}_{item_type}_{user_id}"),
+            InlineKeyboardButton("↩️ Cancelar", callback_data=f"cancel_{item_id}_{callback_prefix}")
         ]
     ]
     
-    await query.edit_message_text(
-        text=f"⏰ Selecciona el tiempo de sanción para el usuario {user_id}:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    # Mantener el mismo mensaje, solo cambiar el teclado
+    if query.message.caption:  # Si es un mensaje con caption (voz)
+        await query.edit_message_caption(
+            caption=query.message.caption,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    else:  # Si es un mensaje de texto normal
+        await query.edit_message_text(
+            text=query.message.text,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
 async def aplicar_sancion(user_id: int, horas: int, context: ContextTypes.DEFAULT_TYPE):
     current_time = time.time()
@@ -489,12 +512,36 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.delete()
         return
 
-    # Manejar cancelación
+    # Manejar cancelación - REGRESAR AL MENÚ ORIGINAL (SIMPLIFICADO)
     if query.data.startswith("cancel_"):
         try:
-            # Eliminar mensaje de moderación
-            await query.message.delete()
-                    
+            parts = query.data.split("_")
+            item_id = int(parts[1])
+            item_type_prefix = parts[2] if len(parts) > 2 else ""
+            
+            # Verificar si el item todavía existe
+            item_exists = False
+            if item_type_prefix == "poll" and item_id in pending_polls:
+                item_exists = True
+            elif item_type_prefix == "voice" and item_id in pending_voices:
+                item_exists = True
+            elif item_id in pending_confessions:
+                item_exists = True
+            
+            if not item_exists:
+                await query.message.delete()
+                return
+
+            if query.message.caption:
+                await query.edit_message_caption(
+                    caption=query.message.caption,
+                    reply_markup=create_moderation_keyboard(item_id, item_type_prefix)
+                )
+            else:
+                await query.edit_message_text(
+                    text=query.message.text,
+                    reply_markup=create_moderation_keyboard(item_id, item_type_prefix)
+                )                    
         except (IndexError, ValueError) as e:
             logging.error(f"Error cancelando sanción: {e}")
             await query.message.delete()

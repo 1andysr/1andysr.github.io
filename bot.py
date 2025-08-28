@@ -306,7 +306,7 @@ async def send_to_moderation(context, item_id, confession_text, user_id, is_poll
         item_type_prefix = "voice"
     else:
         message_text = f"📝 Nueva confesión (ID: {item_id}) - User: {user_id}:\n\n{confession_text}"
-        item_type_prefix = ""
+        item_type_prefix = "text"
 
     if is_voice:
         await context.bot.send_voice(
@@ -324,33 +324,31 @@ async def send_to_moderation(context, item_id, confession_text, user_id, is_poll
 
 def create_moderation_keyboard(item_id, item_type_prefix=""):
     """Crear teclado de moderación (Aprobar, Rechazar, Sancionar)"""
+    # Usar "text" como prefijo para confesiones de texto en lugar de cadena vacía
+    prefix = item_type_prefix if item_type_prefix else "text"
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("✅ Aprobar", callback_data=f"approve_{item_type_prefix}_{item_id}"),
-            InlineKeyboardButton("❌ Rechazar", callback_data=f"reject_{item_type_prefix}_{item_id}")
+            InlineKeyboardButton("✅ Aprobar", callback_data=f"approve_{prefix}_{item_id}"),
+            InlineKeyboardButton("❌ Rechazar", callback_data=f"reject_{prefix}_{item_id}")
         ],
         [
-            InlineKeyboardButton("⚖️ Sancionar", callback_data=f"sancionar_{item_type_prefix}_{item_id}")
+            InlineKeyboardButton("⚖️ Sancionar", callback_data=f"sancionar_{prefix}_{item_id}")
         ]
     ])
 
 async def handle_sancion_menu(query, item_id, item_type, user_id):
     """Mostrar menú de sanciones"""
     # Determinar el prefijo correcto para el callback
-    callback_prefix = ""
-    if item_type == "poll":
-        callback_prefix = "poll"
-    elif item_type == "voice":
-        callback_prefix = "voice"
+    callback_prefix = item_type if item_type else "text"
     
     keyboard = [
         [
-            InlineKeyboardButton("1 hora", callback_data=f"ban_1_{item_id}_{item_type}_{user_id}"),
-            InlineKeyboardButton("2 horas", callback_data=f"ban_2_{item_id}_{item_type}_{user_id}"),
-            InlineKeyboardButton("4 horas", callback_data=f"ban_4_{item_id}_{item_type}_{user_id}"),            
+            InlineKeyboardButton("1 hora", callback_data=f"ban_1_{item_id}_{callback_prefix}_{user_id}"),
+            InlineKeyboardButton("2 horas", callback_data=f"ban_2_{item_id}_{callback_prefix}_{user_id}"),
+            InlineKeyboardButton("4 horas", callback_data=f"ban_4_{item_id}_{callback_prefix}_{user_id}"),            
         ],
         [
-            InlineKeyboardButton("24 horas", callback_data=f"ban_24_{item_id}_{item_type}_{user_id}"),
+            InlineKeyboardButton("24 horas", callback_data=f"ban_24_{item_id}_{callback_prefix}_{user_id}"),
             InlineKeyboardButton("↩️ Cancelar", callback_data=f"cancel_{item_id}_{callback_prefix}")
         ]
     ]
@@ -429,7 +427,7 @@ async def reject_item(item_id, item_type):
     elif item_type == "voice":
         user_id = pending_voices[item_id]["user_id"]
         del pending_voices[item_id]
-    else:
+    else:  # texto
         user_id = pending_confessions[item_id]["user_id"]
         del pending_confessions[item_id]
     return user_id
@@ -442,8 +440,8 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data.startswith("sancionar_"):
         try:
             parts = query.data.split("_")
-            if len(parts) == 3:  # Es texto: "sancionar__12345"
-                item_type = ""  # texto
+            if len(parts) == 3:  # Es texto: "sancionar_text_12345"
+                item_type = parts[1]  # "text"
                 item_id = int(parts[2])
             else:  # Es poll o voice: "sancionar_poll_12345" o "sancionar_voice_12345"
                 item_type = parts[1]
@@ -491,7 +489,7 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif item_type == "voice":
                 if item_id in pending_voices:
                     del pending_voices[item_id]
-            else:
+            else:  # texto
                 if item_id in pending_confessions:
                     del pending_confessions[item_id]
             
@@ -508,7 +506,7 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             parts = query.data.split("_")
             item_id = int(parts[1])
-            item_type_prefix = parts[2] if len(parts) > 2 else ""
+            item_type_prefix = parts[2] if len(parts) > 2 else "text"
             
             # Verificar si el item todavía existe
             item_exists = False
@@ -516,7 +514,7 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 item_exists = True
             elif item_type_prefix == "voice" and item_id in pending_voices:
                 item_exists = True
-            elif item_id in pending_confessions:
+            elif item_type_prefix == "text" and item_id in pending_confessions:
                 item_exists = True
             
             if not item_exists:
@@ -543,14 +541,8 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             parts = query.data.split("_")
             action = parts[0]
-            
-            # Determinar el tipo de contenido
-            if len(parts) == 3:  # Es texto: "approve__12345" o "reject__12345"
-                item_type = ""  # texto
-                item_id = int(parts[2])
-            else:  # Es poll o voice: "approve_poll_12345" o "reject_voice_12345"
-                item_type = parts[1]
-                item_id = int(parts[2])
+            item_type = parts[1]  # "text", "poll" o "voice"
+            item_id = int(parts[2])
             
             if item_type == "poll":
                 if item_id not in pending_polls:

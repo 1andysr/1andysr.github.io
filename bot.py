@@ -17,6 +17,7 @@ import uvicorn
 import asyncio
 import urllib.request
 from datetime import datetime
+from collections import deque
 
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
@@ -34,6 +35,10 @@ pending_polls = {}
 pending_voices = {}
 user_last_confession = {}
 banned_users = {}
+# Nueva cola para publicación automática
+publication_queue = deque()
+# Estado de la publicación automática
+auto_publishing_active = True
 
 class BackupManager:
     def __init__(self, backup_file="bot_backup.json"):
@@ -48,6 +53,7 @@ class BackupManager:
                 'pending_voices': pending_voices,
                 'banned_users': banned_users,
                 'user_last_confession': user_last_confession,
+                'publication_queue': list(publication_queue),
                 'backup_timestamp': datetime.now().isoformat()
             }
             
@@ -71,7 +77,12 @@ class BackupManager:
                 banned_users.update(backup_data.get('banned_users', {}))
                 user_last_confession.update(backup_data.get('user_last_confession', {}))
                 
-                logging.info(f"📂 Backup cargado: {len(pending_confessions)} confesiones, {len(pending_polls)} encuestas, {len(pending_voices)} mensajes de voz")
+                # Cargar la cola de publicación si existe
+                queue_data = backup_data.get('publication_queue', [])
+                publication_queue.clear()
+                publication_queue.extend(queue_data)
+                
+                logging.info(f"📂 Backup cargado: {len(pending_confessions)} confesiones, {len(pending_polls)} encuestas, {len(pending_voices)} mensajes de voz, {len(publication_queue)} en cola")
                 return True
                 
         except Exception as e:
@@ -323,15 +334,16 @@ async def send_to_moderation(context, item_id, confession_text, user_id, is_poll
         )
 
 def create_moderation_keyboard(item_id, item_type_prefix=""):
-    """Crear teclado de moderación (Aprobar, Rechazar, Sancionar)"""
+    """Crear teclado de moderación (Aprobar, Cola, Rechazar, Sancionar)"""
     # Usar "text" como prefijo para confesiones de texto en lugar de cadena vacía
     prefix = item_type_prefix if item_type_prefix else "text"
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("✅ Aprobar", callback_data=f"approve_{prefix}_{item_id}"),
-            InlineKeyboardButton("❌ Rechazar", callback_data=f"reject_{prefix}_{item_id}")
+            InlineKeyboardButton("✅ Cola", callback_data=f"cola_{prefix}_{item_id}")
         ],
         [
+            InlineKeyboardButton("❌ Rechazar", callback_data=f"reject_{prefix}_{item_id}"),
             InlineKeyboardButton("⚖️ Sancionar", callback_data=f"sancionar_{prefix}_{item_id}")
         ]
     ])
@@ -419,6 +431,32 @@ async def approve_item(item_id, item_type, context):
         del pending_confessions[item_id]
         return confession_data["user_id"], "confesión"
 
+async def add_to_queue(item_id, item_type, context):
+    """Agregar item a la cola de publicación automática"""
+    if item_type == "poll":
+        item_data = pending_polls[item_id].copy()
+        item_data["_type"] = "poll"
+        item_data["_id"] = item_id
+        publication_queue.append(item_data)
+        del pending_polls[item_id]
+        return item_data["user_id"], "encuesta"
+    
+    elif item_type == "voice":
+        item_data = pending_voices[item_id].copy()
+        item_data["_type"] = "voice"
+        item_data["_id"] = item_id
+        publication_queue.append(item_data)
+        del pending_voices[item_id]
+        return item_data["user_id"], "mensaje de voz"
+    
+    else:  # Texto
+        item_data = pending_confessions[item_id].copy()
+        item_data["_type"] = "text"
+        item_data["_id"] = item_id
+        publication_queue.append(item_data)
+        del pending_confessions[item_id]
+        return item_data["user_id"], "confesión"
+
 async def reject_item(item_id, item_type):
     """Rechazar item según su tipo"""
     if item_type == "poll":
@@ -432,11 +470,114 @@ async def reject_item(item_id, item_type):
         del pending_confessions[item_id]
     return user_id
 
+async def publish_from_queue(context: ContextTypes.DEFAULT_TYPE):
+    """Publicar el siguiente elemento de la cola"""
+    global auto_publishing_active
+    
+    if not auto_publishing_active:
+        return
+        
+    if publication_queue:
+        item_data = publication_queue.popleft()
+        item_type = item_data["_type"]
+        user_id = item_data["user_id"]
+        
+        try:
+            if item_type == "poll":
+                await context.bot.send_poll(
+                    chat_id=PUBLIC_CHANNEL,
+                    question=item_data["question"],
+                    options=item_data["options"],
+                    is_anonymous=item_data["is_anonymous"],
+                    type=item_data["type"],
+                    allows_multiple_answers=item_data["allows_multiple_answers"]
+                )                
+            elif item_type == "voice":
+                await context.bot.send_voice(
+                    chat_id=PUBLIC_CHANNEL,
+                    voice=item_data["file_id"],
+                    caption="🎤 Confesión anónima en mensaje de voz"
+                )                
+            else:  # Texto
+                await context.bot.send_message(
+                    chat_id=PUBLIC_CHANNEL,
+                    text=f"📢 Confesión anónima:\n\n{item_data['text']}"
+                )
+                logging.info(f"📝 Confesión publicada desde cola (ID: {item_data['_id']})")
+        except Exception as e:
+            logging.error(f"Error publicando desde cola: {e}")
+            # Reinsertar el elemento al principio de la cola si falla
+            publication_queue.appendleft(item_data)    
+    # Programar la siguiente publicación
+    asyncio.create_task(schedule_next_publication(context))
+
+async def schedule_next_publication(context: ContextTypes.DEFAULT_TYPE):
+    """Programar la siguiente publicación automática"""
+    await asyncio.sleep(1800)  # 30 minutos
+    await publish_from_queue(context)
+
 async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    # Manejar sanciones primero
+    # Manejar agregar a cola
+    if query.data.startswith("cola_"):
+        try:
+            parts = query.data.split("_")
+            item_type = parts[1]  # "text", "poll" o "voice"
+            item_id = int(parts[2])
+            
+            if item_type == "poll":
+                if item_id not in pending_polls:
+                    await query.message.delete()
+                    return
+                
+                user_id, item_type_str = await add_to_queue(item_id, "poll", context)
+                try:
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text="⏳ Tu encuesta ha sido añadida a la cola de publicación automática."
+                    )
+                except Exception as e:
+                    logging.error(f"Error notifying user about queue: {e}")
+                await query.message.delete()
+            
+            elif item_type == "voice":
+                if item_id not in pending_voices:
+                    await query.message.delete()
+                    return
+                
+                user_id, item_type_str = await add_to_queue(item_id, "voice", context)
+                try:
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text="⏳ Tu mensaje de voz ha sido añadido a la cola de publicación automática."
+                    )
+                except Exception as e:
+                    logging.error(f"Error notifying user about queue: {e}")
+                await query.message.delete()
+            
+            else:  # Texto
+                if item_id not in pending_confessions:
+                    await query.message.delete()
+                    return
+                
+                user_id, item_type_str = await add_to_queue(item_id, "text", context)
+                try:
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text="⏳ Tu confesión ha sido añadida a la cola de publicación automática."
+                    )
+                except Exception as e:
+                    logging.error(f"Error notifying user about queue: {e}")
+                await query.message.delete()
+                
+        except (IndexError, ValueError) as e:
+            logging.error(f"Error agregando a cola: {e}")
+            await query.message.delete()
+        return
+
+    # Manejar sanciones
     if query.data.startswith("sancionar_"):
         try:
             parts = query.data.split("_")
@@ -645,6 +786,9 @@ async def run_bot():
     
     # Iniciar backup automático en segundo plano
     asyncio.create_task(backup_manager.start_auto_backup())
+    
+    # Iniciar publicación automática desde cola
+    asyncio.create_task(schedule_next_publication(app))
     
     await app.initialize()
     await app.start()

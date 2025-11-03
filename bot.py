@@ -816,7 +816,7 @@ async def self_ping():
             logging.info("Ping sent to keep server alive")
         except Exception as e:
             logging.warning(f"Ping failed: {e}")
-        await asyncio.sleep(300)
+        await asyncio.sleep(50)
 
 async def main():
     await asyncio.gather(

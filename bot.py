@@ -299,10 +299,11 @@ async def handle_poll(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✋ Tu encuesta ha sido enviada a moderación.")
 
 async def send_to_moderation(context, item_id, confession_text, user_id, is_poll=False, is_voice=False, poll_data=None, voice_data=None):
+    # MODIFICACIÓN: Eliminar el ID de usuario del mensaje de moderación
     if is_poll:
         options_text = "\n".join([f"• {option}" for option in poll_data["options"]])
         message_text = (
-            f"📊 Nueva encuesta (ID: {item_id}) - User: {user_id}:\n\n"
+            f"📊 Nueva encuesta (ID: {item_id}):\n\n"
             f"Pregunta: {poll_data['question']}\n\nOpciones:\n{options_text}\n\n"
             f"Tipo: {poll_data['type']}\nAnónima: {'Sí' if poll_data['is_anonymous'] else 'No'}\n"
             f"Múltiples respuestas: {'Sí' if poll_data['allows_multiple_answers'] else 'No'}"
@@ -310,13 +311,14 @@ async def send_to_moderation(context, item_id, confession_text, user_id, is_poll
         item_type_prefix = "poll"
     elif is_voice:
         message_text = (
-            f"🎤 Nuevo mensaje de voz (ID: {item_id}) - User: {user_id}:\n\n"
+            f"🎤 Nuevo mensaje de voz (ID: {item_id}):\n\n"
             f"Duración: {voice_data['duration']} segundos\n"
             f"Tamaño: {voice_data['file_size']} bytes"
         )
         item_type_prefix = "voice"
     else:
-        message_text = f"📝 Nueva confesión (ID: {item_id}) - User: {user_id}:\n\n{confession_text}"
+        # MODIFICACIÓN: Eliminar referencia al usuario en confesiones de texto
+        message_text = f"📝 Nueva confesión (ID: {item_id}):\n\n{confession_text}"
         item_type_prefix = "text"
 
     if is_voice:

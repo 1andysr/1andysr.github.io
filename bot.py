@@ -220,7 +220,7 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def send_question_to_moderation(context, question_id, question_text, user_id):
     """Enviar pregunta al grupo de moderadores con botón de responder"""
     message_text = (
-        f"❓ Nueva pregunta (ID: {question_id}):\n\n"
+        f"❓ Nueva pregunta\n\n"
         f"{question_text}"
     )
     
@@ -236,16 +236,31 @@ async def send_question_to_moderation(context, question_id, question_text, user_
 
 async def handle_question_response(query, question_id, context):
     """Manejar la respuesta a una pregunta"""
-    # Guardar el estado para esperar la respuesta
-    context.user_data['responding_to_question'] = question_id
-    context.user_data['responding_message_id'] = query.message.message_id
-    
-    await query.message.reply_text(
-        f"✍️ Por favor, escribe la respuesta para la pregunta (ID: {question_id}):"
-    )
+    try:
+        # Verificar que la pregunta todavía existe
+        if question_id not in pending_questions:
+            await query.answer("❌ Esta pregunta ya no existe", show_alert=True)
+            return
+            
+        # Guardar el estado para esperar la respuesta
+        context.user_data['responding_to_question'] = question_id
+        context.user_data['responding_message_id'] = query.message.message_id
+        
+        await query.answer()  # Confirmar que se recibió el callback
+        await query.message.reply_text(
+            f"✍️ Por favor, escribe la respuesta para la pregunta (ID: {question_id}):"
+        )
+        
+    except Exception as e:
+        logging.error(f"Error en handle_question_response: {e}")
+        await query.answer("❌ Error al procesar la solicitud", show_alert=True)
 
 async def handle_response_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Manejar el texto de respuesta del moderador"""
+    # ✅ VERIFICACIÓN MEJORADA: Asegurarse de que update.message existe
+    if not update.message or not update.message.text:
+        return
+        
     if str(update.message.chat.id) != str(MODERATION_GROUP_ID):
         return
         
@@ -254,7 +269,7 @@ async def handle_response_text(update: Update, context: ContextTypes.DEFAULT_TYP
     if not question_id:
         return
         
-    # Limpiar el estado
+    # Limpiar el estado inmediatamente
     context.user_data['responding_to_question'] = None
     message_id = context.user_data.get('responding_message_id')
     context.user_data['responding_message_id'] = None
@@ -279,27 +294,69 @@ async def handle_response_text(update: Update, context: ContextTypes.DEFAULT_TYP
         # Eliminar la pregunta de pendientes
         del pending_questions[question_id]
         
-        # Editar el mensaje original para marcarlo como respondido
+        # ✅ ELIMINAR EL MENSAJE ORIGINAL DE LA PREGUNTA
         try:
-            original_message = f"✅ **PREGUNTA RESPONDIDA** (ID: {question_id}):\n\n{question_data['text']}\n\n---\n**Respuesta:** {response_text}"
-            await context.bot.edit_message_text(
+            await context.bot.delete_message(
                 chat_id=MODERATION_GROUP_ID,
-                message_id=message_id,
-                text=original_message
+                message_id=message_id
             )
         except Exception as e:
-            logging.error(f"Error editando mensaje original: {e}")
-            # Si no se puede editar, enviar un mensaje nuevo
-            await context.bot.send_message(
-                chat_id=MODERATION_GROUP_ID,
-                text=f"✅ Pregunta {question_id} respondida exitosamente."
-            )
+            logging.error(f"Error eliminando mensaje original de pregunta: {e}")
+            # Si no se puede eliminar, editar para marcarlo como respondido
+            try:
+                original_message = f"✅ **PREGUNTA RESPONDIDA** (ID: {question_id}):\n\n{question_data['text']}\n\n---\n**Respuesta:** {response_text}"
+                await context.bot.edit_message_text(
+                    chat_id=MODERATION_GROUP_ID,
+                    message_id=message_id,
+                    text=original_message
+                )
+            except Exception as edit_error:
+                logging.error(f"Error editando mensaje original: {edit_error}")
         
-        await update.message.reply_text("✅ Respuesta enviada al usuario.")
+        # ✅ ELIMINAR EL MENSAJE DE RESPUESTA DEL MODERADOR
+        try:
+            await context.bot.delete_message(
+                chat_id=MODERATION_GROUP_ID,
+                message_id=update.message.message_id
+            )
+        except Exception as e:
+            logging.error(f"Error eliminando mensaje de respuesta: {e}")
+        
+        # ✅ ENVIAR MENSAJE DE CONFIRMACIÓN Y ELIMINARLO DESPUÉS
+        confirmation_msg = await context.bot.send_message(
+            chat_id=MODERATION_GROUP_ID,
+            text=f"✅ Pregunta {question_id} respondida exitosamente."
+        )
+        
+        # Eliminar el mensaje de confirmación después de 5 segundos
+        async def delete_confirmation():
+            await asyncio.sleep(5)
+            try:
+                await context.bot.delete_message(
+                    chat_id=MODERATION_GROUP_ID,
+                    message_id=confirmation_msg.message_id
+                )
+            except Exception as e:
+                logging.error(f"Error eliminando mensaje de confirmación: {e}")
+        
+        asyncio.create_task(delete_confirmation())
         
     except Exception as e:
         logging.error(f"Error enviando respuesta: {e}")
-        await update.message.reply_text("❌ Error al enviar la respuesta. El usuario podría haber bloqueado el bot.")
+        error_msg = await update.message.reply_text("❌ Error al enviar la respuesta. El usuario podría haber bloqueado el bot.")
+        
+        # Eliminar el mensaje de error después de 5 segundos
+        async def delete_error():
+            await asyncio.sleep(5)
+            try:
+                await context.bot.delete_message(
+                    chat_id=MODERATION_GROUP_ID,
+                    message_id=error_msg.message_id
+                )
+            except Exception as delete_e:
+                logging.error(f"Error eliminando mensaje de error: {delete_e}")
+        
+        asyncio.create_task(delete_error())
 
 async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Comando para hacer backup manual"""
@@ -718,6 +775,7 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                 except Exception as e:
                     logging.error(f"Error notifying user about queue: {e}")
+                # ✅ ELIMINAR MENSAJE DE MODERACIÓN AL AGREGAR A COLA
                 await query.message.delete()
             
             elif item_type == "voice":
@@ -733,6 +791,7 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                 except Exception as e:
                     logging.error(f"Error notifying user about queue: {e}")
+                # ✅ ELIMINAR MENSAJE DE MODERACIÓN AL AGREGAR A COLA
                 await query.message.delete()
             
             else:  # Texto
@@ -748,6 +807,7 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                 except Exception as e:
                     logging.error(f"Error notifying user about queue: {e}")
+                # ✅ ELIMINAR MENSAJE DE MODERACIÓN AL AGREGAR A COLA
                 await query.message.delete()
                 
         except (IndexError, ValueError) as e:
@@ -877,6 +937,7 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                     except Exception as e:
                         logging.error(f"Error notifying user about poll: {e}")
+                    # ✅ ELIMINAR MENSAJE DE MODERACIÓN AL APROBAR
                     await query.message.delete()
                 else:
                     user_id = await reject_item(item_id, "poll")
@@ -887,6 +948,7 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                     except Exception as e:
                         logging.error(f"Error notifying user about poll rejection: {e}")
+                    # ✅ ELIMINAR MENSAJE DE MODERACIÓN AL RECHAZAR
                     await query.message.delete()
             
             elif item_type == "voice":
@@ -903,6 +965,7 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                     except Exception as e:
                         logging.error(f"Error notifying user about voice: {e}")
+                    # ✅ ELIMINAR MENSAJE DE MODERACIÓN AL APROBAR
                     await query.message.delete()
                 else:
                     user_id = await reject_item(item_id, "voice")
@@ -913,6 +976,7 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                     except Exception as e:
                         logging.error(f"Error notifying user about voice rejection: {e}")
+                    # ✅ ELIMINAR MENSAJE DE MODERACIÓN AL RECHAZAR
                     await query.message.delete()
             
             else:  # Texto
@@ -929,6 +993,7 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                     except Exception as e:
                         logging.error(f"Error notifying user about confession: {e}")
+                    # ✅ ELIMINAR MENSAJE DE MODERACIÓN AL APROBAR
                     await query.message.delete()
                 else:
                     user_id = await reject_item(item_id, "text")
@@ -939,6 +1004,7 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                     except Exception as e:
                         logging.error(f"Error notifying user about confession rejection: {e}")
+                    # ✅ ELIMINAR MENSAJE DE MODERACIÓN AL RECHAZAR
                     await query.message.delete()
             
         except (IndexError, ValueError) as e:

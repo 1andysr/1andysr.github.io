@@ -218,14 +218,15 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Tu pregunta ha sido enviada a los moderadores. Te responderán cuando esté disponible.")
 
 async def send_question_to_moderation(context, question_id, question_text, user_id):
-    """Enviar pregunta al grupo de moderadores con botón de responder"""
+    """Enviar pregunta al grupo de moderadores con botones de responder y sancionar"""
     message_text = (
         f"❓ Nueva pregunta\n\n"
         f"{question_text}"
     )
     
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("📝 Responder", callback_data=f"respond_question_{question_id}")
+        InlineKeyboardButton("📝 Responder", callback_data=f"respond_question_{question_id}"),
+        InlineKeyboardButton("⚖️ Sancionar", callback_data=f"sancionar_question_{question_id}")
     ]])
     
     await context.bot.send_message(
@@ -241,19 +242,54 @@ async def handle_question_response(query, question_id, context):
         if question_id not in pending_questions:
             await query.answer("❌ Esta pregunta ya no existe", show_alert=True)
             return
-            
-        # Guardar el estado para esperar la respuesta
-        context.user_data['responding_to_question'] = question_id
-        context.user_data['responding_message_id'] = query.message.message_id
         
-        await query.answer()  # Confirmar que se recibió el callback
-        await query.message.reply_text(
-            f"✍️ Por favor, escribe la respuesta para la pregunta (ID: {question_id}):"
+        # Guardar información para eliminar mensajes después
+        context.user_data['responding_to_question'] = question_id
+        context.user_data['question_message_id'] = query.message.message_id
+        context.user_data['question_user_id'] = pending_questions[question_id]["user_id"]
+        
+        await query.answer()
+        
+        # ✅ GUARDAR EL MENSAJE "POR FAVOR ESCRIBE..." PARA ELIMINARLO DESPUÉS
+        prompt_message = await query.message.reply_text(
+            "✍️ Por favor, escribe la respuesta para esta pregunta:"
         )
+        context.user_data['response_prompt_message_id'] = prompt_message.message_id
         
     except Exception as e:
         logging.error(f"Error en handle_question_response: {e}")
         await query.answer("❌ Error al procesar la solicitud", show_alert=True)
+        
+async def handle_question_sancion(query, question_id, context):
+    """Manejar sanción para preguntas inapropiadas"""
+    try:
+        if question_id not in pending_questions:
+            await query.answer("❌ Esta pregunta ya no existe", show_alert=True)
+            return
+            
+        user_id = pending_questions[question_id]["user_id"]
+        
+        # Mostrar menú de sanciones (similar al de confesiones)
+        keyboard = [
+            [
+                InlineKeyboardButton("1 hora", callback_data=f"ban_question_1_{question_id}_{user_id}"),
+                InlineKeyboardButton("2 horas", callback_data=f"ban_question_2_{question_id}_{user_id}"),
+                InlineKeyboardButton("4 horas", callback_data=f"ban_question_4_{question_id}_{user_id}"),            
+            ],
+            [
+                InlineKeyboardButton("24 horas", callback_data=f"ban_question_24_{question_id}_{user_id}"),
+                InlineKeyboardButton("↩️ Cancelar", callback_data=f"cancel_question_{question_id}")
+            ]
+        ]
+        
+        await query.edit_message_reply_markup(
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        await query.answer()
+        
+    except Exception as e:
+        logging.error(f"Error en handle_question_sancion: {e}")
+        await query.answer("❌ Error al procesar la sanción", show_alert=True)        
 
 async def handle_response_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Manejar el texto de respuesta del moderador"""
@@ -269,10 +305,16 @@ async def handle_response_text(update: Update, context: ContextTypes.DEFAULT_TYP
     if not question_id:
         return
         
+    # Obtener todos los IDs de mensajes que necesitamos eliminar
+    question_message_id = context.user_data.get('question_message_id')
+    response_prompt_message_id = context.user_data.get('response_prompt_message_id')
+    user_id = context.user_data.get('question_user_id')
+    
     # Limpiar el estado inmediatamente
     context.user_data['responding_to_question'] = None
-    message_id = context.user_data.get('responding_message_id')
-    context.user_data['responding_message_id'] = None
+    context.user_data['question_message_id'] = None
+    context.user_data['response_prompt_message_id'] = None
+    context.user_data['question_user_id'] = None
     
     response_text = update.message.text
     
@@ -282,7 +324,6 @@ async def handle_response_text(update: Update, context: ContextTypes.DEFAULT_TYP
         return
         
     question_data = pending_questions[question_id]
-    user_id = question_data["user_id"]
     
     try:
         # Enviar respuesta al usuario
@@ -294,43 +335,39 @@ async def handle_response_text(update: Update, context: ContextTypes.DEFAULT_TYP
         # Eliminar la pregunta de pendientes
         del pending_questions[question_id]
         
-        # ✅ ELIMINAR EL MENSAJE ORIGINAL DE LA PREGUNTA
-        try:
-            await context.bot.delete_message(
-                chat_id=MODERATION_GROUP_ID,
-                message_id=message_id
-            )
-        except Exception as e:
-            logging.error(f"Error eliminando mensaje original de pregunta: {e}")
-            # Si no se puede eliminar, editar para marcarlo como respondido
+        # ✅ ELIMINAR TODOS LOS MENSAJES RELACIONADOS
+        messages_to_delete = []
+        
+        # Mensaje original de la pregunta
+        if question_message_id:
+            messages_to_delete.append(question_message_id)
+        
+        # Mensaje "Por favor escribe..."
+        if response_prompt_message_id:
+            messages_to_delete.append(response_prompt_message_id)
+        
+        # Mensaje de respuesta del moderador
+        messages_to_delete.append(update.message.message_id)
+        
+        # Eliminar todos los mensajes
+        for msg_id in messages_to_delete:
             try:
-                original_message = f"✅ **PREGUNTA RESPONDIDA** (ID: {question_id}):\n\n{question_data['text']}\n\n---\n**Respuesta:** {response_text}"
-                await context.bot.edit_message_text(
+                await context.bot.delete_message(
                     chat_id=MODERATION_GROUP_ID,
-                    message_id=message_id,
-                    text=original_message
+                    message_id=msg_id
                 )
-            except Exception as edit_error:
-                logging.error(f"Error editando mensaje original: {edit_error}")
+            except Exception as e:
+                logging.error(f"Error eliminando mensaje {msg_id}: {e}")
         
-        # ✅ ELIMINAR EL MENSAJE DE RESPUESTA DEL MODERADOR
-        try:
-            await context.bot.delete_message(
-                chat_id=MODERATION_GROUP_ID,
-                message_id=update.message.message_id
-            )
-        except Exception as e:
-            logging.error(f"Error eliminando mensaje de respuesta: {e}")
-        
-        # ✅ ENVIAR MENSAJE DE CONFIRMACIÓN Y ELIMINARLO DESPUÉS
+        # ✅ ENVIAR Y ELIMINAR MENSAJE DE CONFIRMACIÓN TEMPORAL
         confirmation_msg = await context.bot.send_message(
             chat_id=MODERATION_GROUP_ID,
-            text=f"✅ Pregunta {question_id} respondida exitosamente."
+            text="✅ Pregunta respondida exitosamente."
         )
         
-        # Eliminar el mensaje de confirmación después de 5 segundos
+        # Eliminar el mensaje de confirmación después de 3 segundos
         async def delete_confirmation():
-            await asyncio.sleep(5)
+            await asyncio.sleep(3)
             try:
                 await context.bot.delete_message(
                     chat_id=MODERATION_GROUP_ID,
@@ -343,9 +380,9 @@ async def handle_response_text(update: Update, context: ContextTypes.DEFAULT_TYP
         
     except Exception as e:
         logging.error(f"Error enviando respuesta: {e}")
-        error_msg = await update.message.reply_text("❌ Error al enviar la respuesta. El usuario podría haber bloqueado el bot.")
         
-        # Eliminar el mensaje de error después de 5 segundos
+        # ✅ ELIMINAR MENSAJE DE ERROR DESPUÉS DE 5 SEGUNDOS
+        error_msg = await update.message.reply_text("❌ Error al enviar la respuesta.")
         async def delete_error():
             await asyncio.sleep(5)
             try:
@@ -355,7 +392,6 @@ async def handle_response_text(update: Update, context: ContextTypes.DEFAULT_TYP
                 )
             except Exception as delete_e:
                 logging.error(f"Error eliminando mensaje de error: {delete_e}")
-        
         asyncio.create_task(delete_error())
 
 async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -522,11 +558,11 @@ async def handle_poll(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✋ Tu encuesta ha sido enviada a moderación.")
 
 async def send_to_moderation(context, item_id, confession_text, user_id, is_poll=False, is_voice=False, poll_data=None, voice_data=None):
-    # MODIFICACIÓN: Eliminar el ID de usuario del mensaje de moderación
+    # QUITAR IDs DE LOS MENSAJES
     if is_poll:
         options_text = "\n".join([f"• {option}" for option in poll_data["options"]])
         message_text = (
-            f"📊 Nueva encuesta (ID: {item_id}):\n\n"
+            f"📊 Nueva encuesta\n\n"
             f"Pregunta: {poll_data['question']}\n\nOpciones:\n{options_text}\n\n"
             f"Tipo: {poll_data['type']}\nAnónima: {'Sí' if poll_data['is_anonymous'] else 'No'}\n"
             f"Múltiples respuestas: {'Sí' if poll_data['allows_multiple_answers'] else 'No'}"
@@ -534,14 +570,13 @@ async def send_to_moderation(context, item_id, confession_text, user_id, is_poll
         item_type_prefix = "poll"
     elif is_voice:
         message_text = (
-            f"🎤 Nuevo mensaje de voz (ID: {item_id}):\n\n"
-            f"Duración: {voice_data['duration']} segundos\n"
-            f"Tamaño: {voice_data['file_size']} bytes"
+            f"🎤 Nuevo mensaje de voz\n\n"
+            f"Duración: {voice_data['duration']} segundos"
         )
         item_type_prefix = "voice"
     else:
-        # MODIFICACIÓN: Eliminar referencia al usuario en confesiones de texto
-        message_text = f"📝 Nueva confesión (ID: {item_id}):\n\n{confession_text}"
+        # QUITAR ID DE CONFESIONES
+        message_text = f"📝 Nueva confesión\n\n{confession_text}"
         item_type_prefix = "text"
 
     if is_voice:
@@ -755,63 +790,90 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("❌ Error al procesar la solicitud de respuesta.")
         return
 
-    # Manejar agregar a cola
-    if query.data.startswith("cola_"):
+    # NUEVO: Manejar sanciones para preguntas
+    if query.data.startswith("sancionar_question_"):
+        try:
+            question_id = int(query.data.split("_")[2])
+            await handle_question_sancion(query, question_id, context)
+        except (IndexError, ValueError) as e:
+            logging.error(f"Error procesando sanción de pregunta: {e}")
+            await query.answer("❌ Error al procesar la sanción", show_alert=True)
+        return
+
+    # NUEVO: Manejar bans específicos para preguntas
+    if query.data.startswith("ban_question_"):
         try:
             parts = query.data.split("_")
-            item_type = parts[1]  # "text", "poll" o "voice"
-            item_id = int(parts[2])
+            horas = int(parts[2])
+            question_id = int(parts[3])
+            user_id = int(parts[4])
             
-            if item_type == "poll":
-                if item_id not in pending_polls:
-                    await query.message.delete()
-                    return
-                
-                user_id, item_type_str = await add_to_queue(item_id, "poll", context)
+            # Aplicar sanción
+            unban_time = await aplicar_sancion(user_id, horas, context)
+            
+            # Notificar al usuario
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=f"🚫 Has sido sancionado por {horas} hora(s) por enviar una pregunta inapropiada."
+                )
+            except Exception as e:
+                logging.error(f"Error notificando usuario sobre sanción: {e}")
+            
+            # Eliminar la pregunta de pendientes
+            if question_id in pending_questions:
+                del pending_questions[question_id]
+            
+            # ✅ ELIMINAR MENSAJE DE MODERACIÓN
+            await query.message.delete()
+            
+            # ✅ ENVIAR Y ELIMINAR CONFIRMACIÓN TEMPORAL
+            confirmation_msg = await context.bot.send_message(
+                chat_id=MODERATION_GROUP_ID,
+                text=f"✅ Usuario sancionado por {horas} hora(s)."
+            )
+            
+            async def delete_sancion_confirmation():
+                await asyncio.sleep(3)
                 try:
-                    await context.bot.send_message(
-                        chat_id=user_id,
-                        text="⏳ Tu encuesta ha sido añadida a la cola de publicación automática."
+                    await context.bot.delete_message(
+                        chat_id=MODERATION_GROUP_ID,
+                        message_id=confirmation_msg.message_id
                     )
                 except Exception as e:
-                    logging.error(f"Error notifying user about queue: {e}")
-                # ✅ ELIMINAR MENSAJE DE MODERACIÓN AL AGREGAR A COLA
-                await query.message.delete()
+                    logging.error(f"Error eliminando confirmación de sanción: {e}")
             
-            elif item_type == "voice":
-                if item_id not in pending_voices:
-                    await query.message.delete()
-                    return
-                
-                user_id, item_type_str = await add_to_queue(item_id, "voice", context)
-                try:
-                    await context.bot.send_message(
-                        chat_id=user_id,
-                        text="⏳ Tu mensaje de voz ha sido añadido a la cola de publicación automática."
-                    )
-                except Exception as e:
-                    logging.error(f"Error notifying user about queue: {e}")
-                # ✅ ELIMINAR MENSAJE DE MODERACIÓN AL AGREGAR A COLA
-                await query.message.delete()
+            asyncio.create_task(delete_sancion_confirmation())
             
-            else:  # Texto
-                if item_id not in pending_confessions:
-                    await query.message.delete()
-                    return
+        except (IndexError, ValueError) as e:
+            logging.error(f"Error aplicando ban a pregunta: {e}")
+            await query.answer("❌ Error aplicando la sanción", show_alert=True)
+        return
+
+    # NUEVO: Manejar cancelación de sanción para preguntas
+    if query.data.startswith("cancel_question_"):
+        try:
+            question_id = int(query.data.split("_")[2])
+            
+            # Restaurar teclado original
+            if question_id in pending_questions:
+                question_data = pending_questions[question_id]
+                message_text = f"❓ Nueva pregunta\n\n{question_data['text']}"
                 
-                user_id, item_type_str = await add_to_queue(item_id, "text", context)
-                try:
-                    await context.bot.send_message(
-                        chat_id=user_id,
-                        text="⏳ Tu confesión ha sido añadida a la cola de publicación automática."
-                    )
-                except Exception as e:
-                    logging.error(f"Error notifying user about queue: {e}")
-                # ✅ ELIMINAR MENSAJE DE MODERACIÓN AL AGREGAR A COLA
+                keyboard = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("📝 Responder", callback_data=f"respond_question_{question_id}"),
+                    InlineKeyboardButton("⚖️ Sancionar", callback_data=f"sancionar_question_{question_id}")
+                ]])
+                
+                await query.edit_message_text(
+                    text=message_text,
+                    reply_markup=keyboard
+                )
+            else:
                 await query.message.delete()
                 
         except (IndexError, ValueError) as e:
-            logging.error(f"Error agregando a cola: {e}")
+            logging.error(f"Error cancelando sanción de pregunta: {e}")
             await query.message.delete()
         return
 

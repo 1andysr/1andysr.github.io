@@ -33,6 +33,7 @@ logging.basicConfig(
 pending_confessions = {}
 pending_polls = {}
 pending_voices = {}
+pending_questions = {}  # Nueva variable para preguntas
 user_last_confession = {}
 banned_users = {}
 # Nueva cola para publicación automática
@@ -51,6 +52,7 @@ class BackupManager:
                 'pending_confessions': pending_confessions,
                 'pending_polls': pending_polls,
                 'pending_voices': pending_voices,
+                'pending_questions': pending_questions,  # Nueva línea
                 'banned_users': banned_users,
                 'user_last_confession': user_last_confession,
                 'publication_queue': list(publication_queue),
@@ -74,6 +76,7 @@ class BackupManager:
                 pending_confessions.update(backup_data.get('pending_confessions', {}))
                 pending_polls.update(backup_data.get('pending_polls', {}))
                 pending_voices.update(backup_data.get('pending_voices', {}))
+                pending_questions.update(backup_data.get('pending_questions', {}))  # Nueva línea
                 banned_users.update(backup_data.get('banned_users', {}))
                 user_last_confession.update(backup_data.get('user_last_confession', {}))
                 
@@ -82,7 +85,7 @@ class BackupManager:
                 publication_queue.clear()
                 publication_queue.extend(queue_data)
                 
-                logging.info(f"📂 Backup cargado: {len(pending_confessions)} confesiones, {len(pending_polls)} encuestas, {len(pending_voices)} mensajes de voz, {len(publication_queue)} en cola")
+                logging.info(f"📂 Backup cargado: {len(pending_confessions)} confesiones, {len(pending_polls)} encuestas, {len(pending_voices)} mensajes de voz, {len(pending_questions)} preguntas, {len(publication_queue)} en cola")
                 return True
                 
         except Exception as e:
@@ -121,7 +124,8 @@ def generate_id(*args) -> int:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Hola 👋\n\nEnvíame tu confesión en texto, mensaje de voz o una encuesta nativa de Telegram "
-        "y la publicaré anónimamente después de moderación."
+        "y la publicaré anónimamente después de moderación.\n\n"
+        "También puedes usar /preguntas para enviar una pregunta a los moderadores."
     )
 
 async def confesion(update: Update, context: ContextTypes.DEFAULT_TYPE):  
@@ -139,7 +143,164 @@ async def confesion(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Mención repetida de una misma persona\n"
         "Datos privados ajenos sin consentimiento"
     )
+
+# NUEVO COMANDO PARA PREGUNTAS
+async def preguntas(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Comando para enviar preguntas a moderadores"""
+    if update.message.chat.type != "private":
+        return
+        
+    user_id = update.message.from_user.id
     
+    # Verificar si el usuario está baneado
+    banned, message = is_user_banned(user_id)
+    if banned:
+        await update.message.reply_text(message)
+        return
+
+    # Verificar rate limit
+    rate_limited, message = check_rate_limit(user_id)
+    if rate_limited:
+        await update.message.reply_text(message)
+        return
+
+    # Guardar estado para esperar la pregunta
+    context.user_data['waiting_for_question'] = True
+    
+    await update.message.reply_text(
+        "📝 Por favor, escribe tu pregunta para los moderadores:\n\n"
+        "Recuerda que las preguntas deben ser respetuosas y apropiadas. "
+        "Un moderador te responderá directamente cuando esté disponible."
+    )
+
+async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manejar el texto de la pregunta enviada por el usuario"""
+    if update.message.chat.type != "private":
+        return
+        
+    user_id = update.message.from_user.id
+    
+    # Verificar si estamos esperando una pregunta
+    if not context.user_data.get('waiting_for_question'):
+        return
+    
+    # Limpiar el estado
+    context.user_data['waiting_for_question'] = False
+    
+    # Verificar baneo
+    banned, message = is_user_banned(user_id)
+    if banned:
+        await update.message.reply_text(message)
+        return
+
+    # Verificar rate limit
+    rate_limited, message = check_rate_limit(user_id)
+    if rate_limited:
+        await update.message.reply_text(message)
+        return
+
+    current_time = time.time()
+    user_last_confession[user_id] = current_time
+    
+    question_text = update.message.text
+    question_id = generate_id(user_id, question_text, current_time)
+    
+    # Guardar la pregunta
+    pending_questions[question_id] = {
+        "text": question_text, 
+        "user_id": user_id,
+        "timestamp": current_time
+    }
+    
+    # Enviar a moderación
+    await send_question_to_moderation(context, question_id, question_text, user_id)
+    
+    await update.message.reply_text("✅ Tu pregunta ha sido enviada a los moderadores. Te responderán cuando esté disponible.")
+
+async def send_question_to_moderation(context, question_id, question_text, user_id):
+    """Enviar pregunta al grupo de moderadores con botón de responder"""
+    message_text = (
+        f"❓ Nueva pregunta (ID: {question_id}):\n\n"
+        f"{question_text}"
+    )
+    
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("📝 Responder", callback_data=f"respond_question_{question_id}")
+    ]])
+    
+    await context.bot.send_message(
+        chat_id=MODERATION_GROUP_ID,
+        text=message_text,
+        reply_markup=keyboard
+    )
+
+async def handle_question_response(query, question_id, context):
+    """Manejar la respuesta a una pregunta"""
+    # Guardar el estado para esperar la respuesta
+    context.user_data['responding_to_question'] = question_id
+    context.user_data['responding_message_id'] = query.message.message_id
+    
+    await query.message.reply_text(
+        f"✍️ Por favor, escribe la respuesta para la pregunta (ID: {question_id}):"
+    )
+
+async def handle_response_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manejar el texto de respuesta del moderador"""
+    if str(update.message.chat.id) != str(MODERATION_GROUP_ID):
+        return
+        
+    # Verificar si estamos en modo respuesta
+    question_id = context.user_data.get('responding_to_question')
+    if not question_id:
+        return
+        
+    # Limpiar el estado
+    context.user_data['responding_to_question'] = None
+    message_id = context.user_data.get('responding_message_id')
+    context.user_data['responding_message_id'] = None
+    
+    response_text = update.message.text
+    
+    # Buscar la pregunta
+    if question_id not in pending_questions:
+        await update.message.reply_text("❌ La pregunta ya no existe o fue respondida anteriormente.")
+        return
+        
+    question_data = pending_questions[question_id]
+    user_id = question_data["user_id"]
+    
+    try:
+        # Enviar respuesta al usuario
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=f"📨 Respuesta de los moderadores:\n\n{response_text}"
+        )
+        
+        # Eliminar la pregunta de pendientes
+        del pending_questions[question_id]
+        
+        # Editar el mensaje original para marcarlo como respondido
+        try:
+            original_message = f"✅ **PREGUNTA RESPONDIDA** (ID: {question_id}):\n\n{question_data['text']}\n\n---\n**Respuesta:** {response_text}"
+            await context.bot.edit_message_text(
+                chat_id=MODERATION_GROUP_ID,
+                message_id=message_id,
+                text=original_message
+            )
+        except Exception as e:
+            logging.error(f"Error editando mensaje original: {e}")
+            # Si no se puede editar, enviar un mensaje nuevo
+            await context.bot.send_message(
+                chat_id=MODERATION_GROUP_ID,
+                text=f"✅ Pregunta {question_id} respondida exitosamente."
+            )
+        
+        await update.message.reply_text("✅ Respuesta enviada al usuario.")
+        
+    except Exception as e:
+        logging.error(f"Error enviando respuesta: {e}")
+        await update.message.reply_text("❌ Error al enviar la respuesta. El usuario podría haber bloqueado el bot.")
+
 async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Comando para hacer backup manual"""
     if str(update.message.chat.id) != str(MODERATION_GROUP_ID):
@@ -223,6 +384,11 @@ async def handle_confession(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Verificar si es mensaje de voz
     if update.message.voice:
         await handle_voice(update, context)
+        return
+
+    # Verificar si es una pregunta (estado waiting_for_question)
+    if context.user_data.get('waiting_for_question'):
+        await handle_question(update, context)
         return
 
     # Verificar rate limit
@@ -522,6 +688,16 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
+    # NUEVO: Manejar respuestas a preguntas
+    if query.data.startswith("respond_question_"):
+        try:
+            question_id = int(query.data.split("_")[2])
+            await handle_question_response(query, question_id, context)
+        except (IndexError, ValueError) as e:
+            logging.error(f"Error procesando respuesta a pregunta: {e}")
+            await query.message.reply_text("❌ Error al procesar la solicitud de respuesta.")
+        return
+
     # Manejar agregar a cola
     if query.data.startswith("cola_"):
         try:
@@ -777,7 +953,14 @@ async def run_bot():
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("confesion", confesion))
+    app.add_handler(CommandHandler("preguntas", preguntas))  # Nuevo comando
     app.add_handler(CommandHandler("backup", backup_cmd))
+    
+    # NUEVO: Handler para respuestas de moderadores (solo en grupo de moderación)
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND & filters.Chat(int(MODERATION_GROUP_ID)), 
+        handle_response_text
+    ))
     
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_confession))
     app.add_handler(MessageHandler(filters.POLL & ~filters.COMMAND, handle_poll))
@@ -816,7 +999,7 @@ async def self_ping():
             logging.info("Ping sent to keep server alive")
         except Exception as e:
             logging.warning(f"Ping failed: {e}")
-        await asyncio.sleep(50)
+        await asyncio.sleep(10)
 
 async def main():
     await asyncio.gather(

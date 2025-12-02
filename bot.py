@@ -44,7 +44,7 @@ auto_publishing_active = True
 class BackupManager:
     def __init__(self, backup_file="bot_backup.json"):
         self.backup_file = backup_file
-        self.backup_interval = 300
+        self.backup_interval = 60  # Backup cada 60s para Render.com
     
     async def save_backup(self):
         try:
@@ -773,8 +773,13 @@ async def publish_from_queue(context: ContextTypes.DEFAULT_TYPE):
 
 async def schedule_next_publication(context: ContextTypes.DEFAULT_TYPE):
     """Programar la siguiente publicación automática"""
-    await asyncio.sleep(1800)  # 30 minutos
-    await publish_from_queue(context)
+    while True:
+        try:
+            await asyncio.sleep(1800)  # 30 minutos
+            await publish_from_queue(context)
+        except Exception as e:
+            logging.error(f"❌ Error en schedule_next_publication: {e}")
+            await asyncio.sleep(60)  # Esperar 1 minuto antes de reintentar
 
 async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1074,60 +1079,107 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.delete()
 
 async def run_bot():
-    # Cargar backup al iniciar
-    await backup_manager.load_backup()
-    
-    app = ApplicationBuilder().token(TOKEN).build()
-    
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("confesion", confesion))
-    app.add_handler(CommandHandler("preguntas", preguntas))  # Nuevo comando
-    app.add_handler(CommandHandler("backup", backup_cmd))
-    
-    # NUEVO: Handler para respuestas de moderadores (solo en grupo de moderación)
-    app.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND & filters.Chat(int(MODERATION_GROUP_ID)), 
-        handle_response_text
-    ))
-    
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_confession))
-    app.add_handler(MessageHandler(filters.POLL & ~filters.COMMAND, handle_poll))
-    app.add_handler(MessageHandler(filters.VOICE & ~filters.COMMAND, handle_voice))
-    app.add_handler(MessageHandler(~filters.TEXT & ~filters.POLL & ~filters.VOICE & ~filters.COMMAND, handle_non_text))
-    
-    app.add_handler(CallbackQueryHandler(handle_moderation))
-    
-    # Iniciar backup automático en segundo plano
-    asyncio.create_task(backup_manager.start_auto_backup())
-    
-    # Iniciar publicación automática desde cola
-    asyncio.create_task(schedule_next_publication(app))
-    
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
-    
-    while True:
-        await asyncio.sleep(3600)
+    """Iniciar y ejecutar el bot con manejo de errores"""
+    try:
+        # Validar variables de entorno
+        if not TOKEN:
+            raise ValueError("❌ BOT_TOKEN no configurado")
+        if not MODERATION_GROUP_ID:
+            raise ValueError("❌ MODERATION_GROUP_ID no configurado")
+        if not PUBLIC_CHANNEL:
+            raise ValueError("❌ PUBLIC_CHANNEL no configurado")
+        
+        logging.info("🚀 Iniciando bot...")
+        logging.info(f"📊 Grupo de moderación: {MODERATION_GROUP_ID}")
+        logging.info(f"📢 Canal público: {PUBLIC_CHANNEL}")
+        
+        # Cargar backup al iniciar
+        await backup_manager.load_backup()
+        
+        app = ApplicationBuilder().token(TOKEN).build()
+        
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(CommandHandler("confesion", confesion))
+        app.add_handler(CommandHandler("preguntas", preguntas))  # Nuevo comando
+        app.add_handler(CommandHandler("backup", backup_cmd))
+        
+        # NUEVO: Handler para respuestas de moderadores (solo en grupo de moderación)
+        app.add_handler(MessageHandler(
+            filters.TEXT & ~filters.COMMAND & filters.Chat(int(MODERATION_GROUP_ID)), 
+            handle_response_text
+        ))
+        
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_confession))
+        app.add_handler(MessageHandler(filters.POLL & ~filters.COMMAND, handle_poll))
+        app.add_handler(MessageHandler(filters.VOICE & ~filters.COMMAND, handle_voice))
+        app.add_handler(MessageHandler(~filters.TEXT & ~filters.POLL & ~filters.VOICE & ~filters.COMMAND, handle_non_text))
+        
+        app.add_handler(CallbackQueryHandler(handle_moderation))
+        
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling()
+        
+        logging.info("✅ Bot iniciado correctamente")
+        
+        # Iniciar tareas en segundo plano
+        asyncio.create_task(backup_manager.start_auto_backup())
+        asyncio.create_task(schedule_next_publication(app))
+        
+        # Mantener el bot ejecutándose
+        await asyncio.Event().wait()
+        
+    except Exception as e:
+        logging.error(f"❌ Error crítico en run_bot: {e}")
+        raise
 
 def run_fastapi():
-    app = FastAPI()
+    """Servidor FastAPI con health checks para Render.com"""
+    app = FastAPI(title="Telegram Confession Bot")
 
     @app.get("/")
     def read_root():
-        return {"status": "Bot is running"}
+        return {
+            "status": "running",
+            "bot": "Telegram Confession Bot",
+            "version": "1.0.0"
+        }
     
-    uvicorn.run(app, host="0.0.0.0", port=10000)
+    @app.get("/health")
+    def health_check():
+        return {
+            "status": "healthy",
+            "pending_confessions": len(pending_confessions),
+            "pending_polls": len(pending_polls),
+            "pending_voices": len(pending_voices),
+            "pending_questions": len(pending_questions),
+            "publication_queue": len(publication_queue),
+            "banned_users": len(banned_users)
+        }
+    
+    @app.get("/stats")
+    def get_stats():
+        return {
+            "confessions": len(pending_confessions),
+            "polls": len(pending_polls),
+            "voices": len(pending_voices),
+            "questions": len(pending_questions),
+            "queue": len(publication_queue),
+            "bans": len(banned_users)
+        }
+    
+    uvicorn.run(app, host="0.0.0.0", port=10000, log_level="info")
 
 async def self_ping():
+    """Ping cada 30s para evitar timeout de 50s en Render.com"""
     url = os.getenv("RENDER_EXTERNAL_URL") or "https://oneandysr-github-io.onrender.com"
     while True:
         try:
-            urllib.request.urlopen(url, timeout=10)
-            logging.info("Ping sent to keep server alive")
+            urllib.request.urlopen(url, timeout=5)
+            logging.info("✅ Ping exitoso - servidor activo")
         except Exception as e:
-            logging.warning(f"Ping failed: {e}")
-        await asyncio.sleep(10)
+            logging.warning(f"⚠️ Ping falló: {e}")
+        await asyncio.sleep(30)  # Ping cada 30s (timeout de Render: 50s)
 
 async def main():
     await asyncio.gather(

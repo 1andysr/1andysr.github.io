@@ -982,6 +982,45 @@ async def handle_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.delete()
         return
 
+    # NUEVO: Manejar envío a la cola (Esto es lo que falta)
+    if query.data.startswith("cola_"):
+        try:
+            parts = query.data.split("_")
+            item_type = parts[1]  # "text", "poll" o "voice"
+            item_id = int(parts[2])
+            
+            # Verificar si el item existe antes de procesar
+            exists = False
+            if item_type == "poll" and item_id in pending_polls: exists = True
+            elif item_type == "voice" and item_id in pending_voices: exists = True
+            elif item_type == "text" and item_id in pending_confessions: exists = True
+            
+            if not exists:
+                await query.answer("⚠️ Este elemento ya no está disponible.", show_alert=True)
+                await query.message.delete()
+                return
+
+            # Ejecutar la función add_to_queue
+            user_id, item_type_str = await add_to_queue(item_id, item_type, context)
+            
+            # Notificar al usuario
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=f"🕒 Tu {item_type_str} ha sido aprobada y añadida a la cola de publicación automática."
+                )
+            except Exception as e:
+                logging.error(f"Error notificando usuario sobre cola: {e}")
+
+            # Feedback visual al moderador y eliminar mensaje
+            await query.answer("✅ Añadido a la cola correctamente")
+            await query.message.delete()
+            
+        except (IndexError, ValueError) as e:
+            logging.error(f"Error procesando cola: {e}")
+            await query.answer("❌ Error al procesar la solicitud")
+        return
+
     # Procesamiento normal (aprobaciones/rechazos)
     if query.data.startswith("approve_") or query.data.startswith("reject_"):
         try:

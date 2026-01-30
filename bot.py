@@ -1149,9 +1149,9 @@ async def run_bot():
             handle_response_text
         ))
         
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_confession))
-        app.add_handler(MessageHandler(filters.POLL & ~filters.COMMAND, handle_poll))
-        app.add_handler(MessageHandler(filters.VOICE & ~filters.COMMAND, handle_voice))
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_confession))
+        app.add_handler(MessageHandler(filters.POLL & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_poll))
+        app.add_handler(MessageHandler(filters.VOICE & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_voice))
         app.add_handler(MessageHandler(~filters.TEXT & ~filters.POLL & ~filters.VOICE & ~filters.COMMAND, handle_non_text))
         
         app.add_handler(CallbackQueryHandler(handle_moderation))

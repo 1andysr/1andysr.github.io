@@ -776,7 +776,7 @@ async def schedule_next_publication(context: ContextTypes.DEFAULT_TYPE):
     """Programar la siguiente publicación automática"""
     while True:
         try:
-            await asyncio.sleep(1800)  # 30 minutos
+            await asyncio.sleep(3600)  # 30 minutos
             await publish_from_queue(context)
         except Exception as e:
             logging.error(f"❌ Error en schedule_next_publication: {e}")
